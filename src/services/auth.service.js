@@ -292,16 +292,6 @@ async function revokeAllForUser(userId) {
     );
 }
 
-// ---------- /auth/me — Flutter sessiyani shu orqali tekshiradi ----------
-async function getUserById(userId) {
-    const { rows } = await pool.query(
-        `SELECT ${PUBLIC_USER_FIELDS} FROM users WHERE id = $1 AND is_active = true`,
-        [userId]
-    );
-    if (!rows[0]) throw httpError('Foydalanuvchi topilmadi', 404);
-    return rows[0];
-}
-
 // ---------- Email tasdiqlash kodini tekshirish (ro'yxatdan o'tishni yakunlaydi) ----------
 async function verifyEmailCode({ email, code, deviceInfo }) {
     const mail = normalizeEmail(email);
@@ -339,7 +329,6 @@ module.exports = {
     refreshAccessToken,
     revokeRefreshToken,
     revokeAllForUser,
-    getUserById,
     verifyEmailCode,
     resendVerificationCode,
 };

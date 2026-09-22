@@ -1,4 +1,5 @@
 const authService = require('../services/auth.service');
+const usersService = require('../services/users.service');
 const { verifyGoogleToken, verifyFacebookToken } = require('../services/oauthVerify.service');
 const otpService = require('../services/otp.service');
 
@@ -104,9 +105,13 @@ async function logoutAll(req, res) {
 }
 
 // Flutter ilova ochilganda sessiya haqiqiyligini shu orqali tekshiradi
+// usersService.getProfile — to'liq profil (kengaytirilgan maydonlar, rasmlar,
+// followers/following/posts sonlari) qaytaradi. Ilova sessiyani tekshirganda
+// (AuthCheckRequested) shu endpointdan foydalanadi, shuning uchun bu yerdagi
+// ma'lumot ham to'liq bo'lishi kerak — aks holda son maydonlari 0 ko'rinadi.
 async function me(req, res) {
     try {
-        const user = await authService.getUserById(req.userId);
+        const user = await usersService.getProfile(req.userId, req.userId);
         res.json({ user });
     } catch (err) {
         handleError(res, err);
