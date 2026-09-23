@@ -25,6 +25,29 @@ async function isParticipant(conversationId, userId) {
     return rows.length > 0;
 }
 
+// Xabarni to'liq shaklda qayta o'qish — reply-to preview bilan birga.
+// Yaratish/tahrirlash/pin/forward kabi barcha amallar shu shaklni qaytaradi,
+// shunda client har doim bir xil JSON tuzilmasini oladi.
+const MESSAGE_SELECT_SQL = `
+    SELECT m.id, m.conversation_id, m.sender_id, m.content, m.media_url, m.type, m.status,
+           m.is_pinned, m.edited_at, m.deleted_for_everyone, m.is_forwarded, m.forwarded_from_username,
+           m.reply_to_id,
+           rt.content AS reply_to_content, rt.type AS reply_to_type,
+           rt.sender_username AS reply_to_sender_username, rt.deleted_for_everyone AS reply_to_deleted,
+           m.created_at
+    FROM messages m
+    LEFT JOIN LATERAL (
+        SELECT rm.content, rm.type, rm.deleted_for_everyone, ru.username AS sender_username
+        FROM messages rm JOIN users ru ON ru.id = rm.sender_id
+        WHERE rm.id = m.reply_to_id
+    ) rt ON true
+`;
+
+async function fetchMessageById(id) {
+    const { rows } = await pool.query(`${MESSAGE_SELECT_SQL} WHERE m.id = $1`, [id]);
+    return rows[0];
+}
+
 // ---------- 1:1 suhbatni topish yoki yaratish ----------
 // V1: faqat ikki kishilik (is_group = false) suhbatlar. Ikkala foydalanuvchi
 // orasida allaqachon suhbat bo'lsa — o'shani qaytaradi, bo'lmasa yangi yaratadi.
@@ -132,13 +155,15 @@ async function listConversations(userId, { limit } = {}) {
 }
 
 // ---------- Suhbat xabarlari tarixi (sahifalash: cursor = oxirgi olingan xabarning created_at'i) ----------
+// "O'zim uchun o'chirilgan" xabarlar bu foydalanuvchiga umuman ko'rsatilmaydi.
 async function listMessages(conversationId, userId, { limit, cursor } = {}) {
     if (!(await isParticipant(conversationId, userId))) {
         throw httpError('Bu suhbatga kirish huquqingiz yo\'q', 403);
     }
     const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 30, 1), 60);
-    const params = [conversationId];
-    let where = 'WHERE m.conversation_id = $1';
+    const params = [conversationId, userId];
+    let where = `WHERE m.conversation_id = $1
+        AND NOT EXISTS (SELECT 1 FROM message_deletions md WHERE md.message_id = m.id AND md.user_id = $2)`;
     if (cursor) {
         params.push(cursor);
         where += ` AND m.created_at < $${params.length}`;
@@ -146,8 +171,7 @@ async function listMessages(conversationId, userId, { limit, cursor } = {}) {
     params.push(safeLimit);
 
     const { rows } = await pool.query(
-        `SELECT m.id, m.conversation_id, m.sender_id, m.content, m.media_url, m.type, m.status, m.created_at
-         FROM messages m
+        `${MESSAGE_SELECT_SQL}
          ${where}
          ORDER BY m.created_at DESC
          LIMIT $${params.length}`,
@@ -157,21 +181,135 @@ async function listMessages(conversationId, userId, { limit, cursor } = {}) {
 }
 
 // ---------- Yangi xabar yuborish ----------
-async function sendMessage(conversationId, senderId, content) {
+// mediaUrl berilsa — rasm/video xabari (content ixtiyoriy, izoh sifatida);
+// berilmasa — oddiy matnli xabar (content majburiy). replyToId berilsa —
+// shu suhbatdagi mavjud xabarga javob sifatida bog'lanadi.
+async function sendMessage(conversationId, senderId, content, { mediaUrl, type, replyToId } = {}) {
     if (!(await isParticipant(conversationId, senderId))) {
         throw httpError('Bu suhbatga kirish huquqingiz yo\'q', 403);
     }
     const trimmed = (content || '').trim();
+    if (!mediaUrl && !trimmed) throw httpError('Xabar bo\'sh bo\'lmasin', 400);
+    if (trimmed.length > 2000) throw httpError('Xabar juda uzun', 400);
+
+    if (replyToId) {
+        const replyCheck = await pool.query(
+            'SELECT 1 FROM messages WHERE id = $1 AND conversation_id = $2',
+            [replyToId, conversationId]
+        );
+        if (!replyCheck.rows[0]) throw httpError('Javob berilayotgan xabar topilmadi', 404);
+    }
+
+    const { rows } = await pool.query(
+        `INSERT INTO messages (conversation_id, sender_id, content, media_url, type, status, reply_to_id)
+         VALUES ($1, $2, $3, $4, $5, 'sent', $6)
+         RETURNING id`,
+        [conversationId, senderId, trimmed, mediaUrl || null, type || 'text', replyToId || null]
+    );
+    return fetchMessageById(rows[0].id);
+}
+
+// ---------- Xabarni tahrirlash ----------
+// Faqat yuboruvchining o'zi, faqat matnli (media bo'lmagan) va hali
+// o'chirilmagan xabarlarni tahrirlashi mumkin.
+async function editMessage(messageId, userId, newContent) {
+    const trimmed = (newContent || '').trim();
     if (!trimmed) throw httpError('Xabar bo\'sh bo\'lmasin', 400);
     if (trimmed.length > 2000) throw httpError('Xabar juda uzun', 400);
 
     const { rows } = await pool.query(
-        `INSERT INTO messages (conversation_id, sender_id, content, type, status)
-         VALUES ($1, $2, $3, 'text', 'sent')
-         RETURNING id, conversation_id, sender_id, content, media_url, type, status, created_at`,
-        [conversationId, senderId, trimmed]
+        `UPDATE messages SET content = $1, edited_at = NOW()
+         WHERE id = $2 AND sender_id = $3 AND type = 'text' AND deleted_for_everyone = false
+         RETURNING id`,
+        [trimmed, messageId, userId]
     );
-    return rows[0];
+    if (!rows[0]) throw httpError('Xabarni tahrirlab bo\'lmaydi', 404);
+    return fetchMessageById(messageId);
+}
+
+// ---------- "O'zim uchun o'chirish" ----------
+// Xabarning o'zi o'zgarmaydi — faqat shu foydalanuvchining ro'yxatidan
+// yashiriladi (boshqa ishtirokchi hali ham ko'radi).
+async function deleteForMe(messageId, userId) {
+    const { rows } = await pool.query(
+        `SELECT m.conversation_id FROM messages m
+         JOIN conversation_participants cp ON cp.conversation_id = m.conversation_id AND cp.user_id = $2
+         WHERE m.id = $1`,
+        [messageId, userId]
+    );
+    if (!rows[0]) throw httpError('Xabar topilmadi', 404);
+    await pool.query(
+        'INSERT INTO message_deletions (message_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [messageId, userId]
+    );
+    return { conversationId: rows[0].conversation_id };
+}
+
+// ---------- "Hamma uchun o'chirish" ----------
+// Faqat yuboruvchi. Matn/media tozalanadi, deleted_for_everyone belgilanadi
+// — client bu bayroq bo'yicha "Xabar o'chirildi" placeholder ko'rsatadi.
+async function deleteForEveryone(messageId, userId) {
+    const { rows } = await pool.query(
+        `UPDATE messages SET content = '', media_url = NULL, deleted_for_everyone = true
+         WHERE id = $1 AND sender_id = $2
+         RETURNING id`,
+        [messageId, userId]
+    );
+    if (!rows[0]) throw httpError('Xabarni o\'chirib bo\'lmaydi', 404);
+    return fetchMessageById(messageId);
+}
+
+// ---------- Pin / Unpin ----------
+// Ikkala ishtirokchi ham pin/unpin qila oladi (WhatsApp'dagi kabi).
+async function setPinned(messageId, userId, pinned) {
+    const { rows } = await pool.query(
+        `SELECT m.conversation_id FROM messages m
+         JOIN conversation_participants cp ON cp.conversation_id = m.conversation_id AND cp.user_id = $2
+         WHERE m.id = $1`,
+        [messageId, userId]
+    );
+    if (!rows[0]) throw httpError('Xabar topilmadi', 404);
+    await pool.query('UPDATE messages SET is_pinned = $1 WHERE id = $2', [pinned, messageId]);
+    return fetchMessageById(messageId);
+}
+
+// ---------- Suhbatdagi joriy pin qilingan xabar (eng so'nggisi) ----------
+async function getPinnedMessage(conversationId, userId) {
+    if (!(await isParticipant(conversationId, userId))) {
+        throw httpError('Bu suhbatga kirish huquqingiz yo\'q', 403);
+    }
+    const { rows } = await pool.query(
+        `${MESSAGE_SELECT_SQL} WHERE m.conversation_id = $1 AND m.is_pinned = true
+         ORDER BY m.created_at DESC LIMIT 1`,
+        [conversationId]
+    );
+    return rows[0] || null;
+}
+
+// ---------- Xabarni boshqa suhbatga forward qilish ----------
+// V1: faqat allaqachon mavjud suhbatlarga (yuboruvchi ham manba, ham
+// maqsad suhbatning ishtirokchisi bo'lishi shart).
+async function forwardMessage(messageId, targetConversationId, userId) {
+    const src = await pool.query(
+        `SELECT m.content, m.media_url, m.type, u.username AS sender_username
+         FROM messages m
+         JOIN conversation_participants cp ON cp.conversation_id = m.conversation_id AND cp.user_id = $2
+         JOIN users u ON u.id = m.sender_id
+         WHERE m.id = $1 AND m.deleted_for_everyone = false`,
+        [messageId, userId]
+    );
+    if (!src.rows[0]) throw httpError('Xabar topilmadi', 404);
+    if (!(await isParticipant(targetConversationId, userId))) {
+        throw httpError('Bu suhbatga kirish huquqingiz yo\'q', 403);
+    }
+    const source = src.rows[0];
+    const { rows } = await pool.query(
+        `INSERT INTO messages (conversation_id, sender_id, content, media_url, type, status, is_forwarded, forwarded_from_username)
+         VALUES ($1, $2, $3, $4, $5, 'sent', true, $6)
+         RETURNING id`,
+        [targetConversationId, userId, source.content, source.media_url, source.type, source.sender_username]
+    );
+    return fetchMessageById(rows[0].id);
 }
 
 // ---------- Suhbatni "o'qildi" deb belgilash ----------
@@ -199,5 +337,11 @@ module.exports = {
     listConversations,
     listMessages,
     sendMessage,
+    editMessage,
+    deleteForMe,
+    deleteForEveryone,
+    setPinned,
+    getPinnedMessage,
+    forwardMessage,
     markConversationRead,
 };

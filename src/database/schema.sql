@@ -169,14 +169,30 @@ CREATE TABLE IF NOT EXISTS conversation_participants (
 );
 
 CREATE TABLE IF NOT EXISTS messages (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-    sender_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    content         TEXT NOT NULL,
-    media_url       TEXT,
-    type            VARCHAR(10) NOT NULL DEFAULT 'text' CHECK (type IN ('text', 'image', 'video', 'voice')),
-    status          VARCHAR(10) NOT NULL DEFAULT 'sent' CHECK (status IN ('sent', 'delivered', 'read')),
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id         UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    sender_id               UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    content                 TEXT NOT NULL,
+    media_url               TEXT,
+    type                    VARCHAR(10) NOT NULL DEFAULT 'text' CHECK (type IN ('text', 'image', 'video', 'voice', 'gif')),
+    status                  VARCHAR(10) NOT NULL DEFAULT 'sent' CHECK (status IN ('sent', 'delivered', 'read')),
+    reply_to_id             UUID REFERENCES messages(id) ON DELETE SET NULL,
+    is_pinned               BOOLEAN NOT NULL DEFAULT false,
+    edited_at               TIMESTAMPTZ,
+    deleted_for_everyone    BOOLEAN NOT NULL DEFAULT false,
+    is_forwarded            BOOLEAN NOT NULL DEFAULT false,
+    forwarded_from_username VARCHAR(50),
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- "O'zim uchun o'chirish" — faqat shu foydalanuvchining ro'yxatidan
+-- yashiradi, xabarning o'zi (va boshqa ishtirokchi uchun) o'zgarmaydi.
+CREATE TABLE IF NOT EXISTS message_deletions (
+    message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (message_id, user_id)
 );
 
 -- Tezkor qidiruv uchun indekslar
@@ -196,3 +212,6 @@ CREATE INDEX IF NOT EXISTS idx_post_media_post_id ON post_media(post_id);
 CREATE INDEX IF NOT EXISTS idx_conversation_participants_user ON conversation_participants(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_created   ON messages(conversation_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_sender    ON messages(conversation_id, sender_id, status);
+CREATE INDEX IF NOT EXISTS idx_messages_reply_to    ON messages(reply_to_id);
+CREATE INDEX IF NOT EXISTS idx_messages_pinned      ON messages(conversation_id, is_pinned) WHERE is_pinned = true;
+CREATE INDEX IF NOT EXISTS idx_message_deletions_user ON message_deletions(user_id);

@@ -60,4 +60,20 @@ const uploadPost = multer({
     { name: 'photos', maxCount: 10 },
 ]);
 
-module.exports = { uploadPhoto, uploadPost, UPLOAD_DIR };
+function chatMediaFileFilter(req, file, cb) {
+    const allowedImages = ['image/jpeg', 'image/png', 'image/webp'];
+    const allowedVideos = ['video/mp4', 'video/quicktime', 'video/webm'];
+    if (![...allowedImages, ...allowedVideos].includes(file.mimetype)) {
+        return cb(Object.assign(new Error('Faqat rasm (JPEG/PNG/WEBP) yoki video (MP4/MOV/WEBM) yuklash mumkin'), { status: 400 }));
+    }
+    cb(null, true);
+}
+
+// Chatda bitta xabarga bitta rasm yoki video biriktiriladi (field nomi "media").
+const uploadChatMedia = multer({
+    storage,
+    fileFilter: chatMediaFileFilter,
+    limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB — video uchun
+}).single('media');
+
+module.exports = { uploadPhoto, uploadPost, uploadChatMedia, UPLOAD_DIR };

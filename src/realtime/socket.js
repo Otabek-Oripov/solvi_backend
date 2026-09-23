@@ -72,9 +72,9 @@ function initSocket(httpServer) {
             socket.leave(`conversation:${conversationId}`);
         });
 
-        socket.on('message:send', async ({ conversationId, content } = {}, ack) => {
+        socket.on('message:send', async ({ conversationId, content, replyToId } = {}, ack) => {
             try {
-                const message = await messagingService.sendMessage(conversationId, userId, content);
+                const message = await messagingService.sendMessage(conversationId, userId, content, { replyToId });
                 await emitToParticipants(io, conversationId, 'message:new', message);
                 ack?.({ message });
             } catch (err) {
