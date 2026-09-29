@@ -2,6 +2,8 @@ const { Server } = require('socket.io');
 const pool = require('../config/db');
 const { verifyAccessToken } = require('../utils/jwt');
 const messagingService = require('../services/messaging.service');
+const { registerCallHandlers, handleUserFullyOffline } = require('./call-socket');
+const { registerRandomChatHandlers, removeFromQueue } = require('./random-chat-socket');
 
 // Bitta foydalanuvchi bir nechta qurilmadan (socket) ulangan bo'lishi mumkin —
 // "online" holatini faqat ENG OXIRGI socket uzilganda "offline"ga o'zgartiramiz.
@@ -72,10 +74,26 @@ function initSocket(httpServer) {
             socket.leave(`conversation:${conversationId}`);
         });
 
+        registerCallHandlers(io, socket);
+        registerRandomChatHandlers(io, socket);
+
         socket.on('message:send', async ({ conversationId, content, replyToId } = {}, ack) => {
             try {
                 const message = await messagingService.sendMessage(conversationId, userId, content, { replyToId });
                 await emitToParticipants(io, conversationId, 'message:new', message);
+                ack?.({ message });
+            } catch (err) {
+                ack?.({ error: err.message });
+            }
+        });
+
+        socket.on('message:react', async ({ messageId, emoji } = {}, ack) => {
+            try {
+                if (!emoji || typeof emoji !== 'string' || emoji.length > 16) {
+                    throw new Error('Yaroqsiz emoji');
+                }
+                const { message, conversationId } = await messagingService.setReaction(messageId, userId, emoji);
+                await emitToParticipants(io, conversationId, 'message:reaction_changed', message);
                 ack?.({ message });
             } catch (err) {
                 ack?.({ error: err.message });
@@ -104,6 +122,8 @@ function initSocket(httpServer) {
             if (sockets && sockets.size === 0) {
                 userSockets.delete(userId);
                 setUserStatus(userId, 'offline').catch(() => {});
+                handleUserFullyOffline(io, userId);
+                removeFromQueue(userId);
             }
         });
     });

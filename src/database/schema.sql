@@ -182,6 +182,9 @@ CREATE TABLE IF NOT EXISTS messages (
     deleted_for_everyone    BOOLEAN NOT NULL DEFAULT false,
     is_forwarded            BOOLEAN NOT NULL DEFAULT false,
     forwarded_from_username VARCHAR(50),
+    group_id                TEXT,
+    duration_ms             INTEGER,
+    waveform                TEXT,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -191,6 +194,17 @@ CREATE TABLE IF NOT EXISTS message_deletions (
     message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
     user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (message_id, user_id)
+);
+
+-- Xabarga emoji reaksiya — foydalanuvchi boshiga bitta emoji qo'ya oladi
+-- (qayta bosilsa o'chadi, boshqasi tanlansa almashadi).
+CREATE TABLE IF NOT EXISTS message_reactions (
+    message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    emoji      VARCHAR(16) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     PRIMARY KEY (message_id, user_id)
 );
@@ -214,4 +228,6 @@ CREATE INDEX IF NOT EXISTS idx_messages_conversation_created   ON messages(conve
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_sender    ON messages(conversation_id, sender_id, status);
 CREATE INDEX IF NOT EXISTS idx_messages_reply_to    ON messages(reply_to_id);
 CREATE INDEX IF NOT EXISTS idx_messages_pinned      ON messages(conversation_id, is_pinned) WHERE is_pinned = true;
+CREATE INDEX IF NOT EXISTS idx_messages_group_id    ON messages(group_id) WHERE group_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_message_deletions_user ON message_deletions(user_id);
+CREATE INDEX IF NOT EXISTS idx_message_reactions_message ON message_reactions(message_id);

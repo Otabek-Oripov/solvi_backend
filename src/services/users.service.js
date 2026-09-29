@@ -340,8 +340,19 @@ async function listFollowers(userId, { limit, cursor, viewerId }) {
     return rows;
 }
 
+// Faqat mavjud/faol foydalanuvchimi tekshirish uchun yengil so'rov —
+// masalan qo'ng'iroqqa kim taklif qilinayotganini tasdiqlashda ishlatiladi.
+async function userExists(userId) {
+    const { rows } = await pool.query(
+        'SELECT 1 FROM users WHERE id = $1 AND is_active = true',
+        [userId]
+    );
+    return !!rows[0];
+}
+
 module.exports = {
     getProfile,
+    userExists,
     updateProfile,
     listPhotos,
     addPhoto,

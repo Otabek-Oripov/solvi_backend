@@ -63,8 +63,15 @@ const uploadPost = multer({
 function chatMediaFileFilter(req, file, cb) {
     const allowedImages = ['image/jpeg', 'image/png', 'image/webp'];
     const allowedVideos = ['video/mp4', 'video/quicktime', 'video/webm'];
-    if (![...allowedImages, ...allowedVideos].includes(file.mimetype)) {
-        return cb(Object.assign(new Error('Faqat rasm (JPEG/PNG/WEBP) yoki video (MP4/MOV/WEBM) yuklash mumkin'), { status: 400 }));
+    // Ovozli xabar — "record" paketi odatda AAC/M4A formatida yozadi;
+    // ba'zi qurilma/brauzerlar boshqa mime turlarini yuborishi mumkin,
+    // shuning uchun keng ro'yxat.
+    const allowedAudio = [
+        'audio/mp4', 'audio/m4a', 'audio/x-m4a', 'audio/aac',
+        'audio/mpeg', 'audio/wav', 'audio/webm', 'audio/ogg',
+    ];
+    if (![...allowedImages, ...allowedVideos, ...allowedAudio].includes(file.mimetype)) {
+        return cb(Object.assign(new Error('Faqat rasm, video yoki ovozli xabar yuklash mumkin'), { status: 400 }));
     }
     cb(null, true);
 }

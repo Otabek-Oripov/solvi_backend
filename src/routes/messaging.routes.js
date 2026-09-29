@@ -48,6 +48,14 @@ router.post(
         body('mediaUrl').optional({ values: 'falsy' }).isURL().withMessage('mediaUrl noto\'g\'ri'),
         body('type').optional({ values: 'falsy' }).isIn(['image', 'gif']).withMessage('type noto\'g\'ri'),
         body('replyToId').optional({ values: 'falsy' }).isUUID().withMessage('replyToId noto\'g\'ri'),
+        // Bir nechta rasm birga tanlab yuborilganda — barchasiga bir xil
+        // qiymat beriladi, shunda ular chatda bitta albom sifatida chiqadi.
+        body('groupId').optional({ values: 'falsy' }).isString().isLength({ max: 100 }).withMessage('groupId noto\'g\'ri'),
+        // Ovozli xabar — davomiylik (ms) va to'lqin shakli namunalari
+        // (vergul bilan ajratilgan sonlar, "media" fayl yozib olish paytida
+        // mijoz tomonidan hisoblanadi).
+        body('durationMs').optional({ values: 'falsy' }).isInt({ min: 0 }).withMessage('durationMs noto\'g\'ri'),
+        body('waveform').optional({ values: 'falsy' }).isString().isLength({ max: 2000 }).withMessage('waveform noto\'g\'ri'),
     ],
     validate,
     controller.sendMessage

@@ -61,17 +61,26 @@ async function sendMessage(req, res) {
         let mediaUrl, type;
         if (file) {
             mediaUrl = toUrl(req, file.filename);
-            type = file.mimetype.startsWith('video/') ? 'video' : 'image';
+            if (file.mimetype.startsWith('video/')) type = 'video';
+            else if (file.mimetype.startsWith('audio/')) type = 'voice';
+            else type = 'image';
         } else if (req.body.mediaUrl) {
             mediaUrl = req.body.mediaUrl;
             type = req.body.type === 'gif' ? 'gif' : 'image';
         }
 
+        const durationMs = req.body.durationMs ? parseInt(req.body.durationMs, 10) : null;
         const message = await messagingService.sendMessage(
             req.params.id,
             req.userId,
             req.body.content,
-            { mediaUrl, type, replyToId: req.body.replyToId || null }
+            {
+                mediaUrl, type,
+                replyToId: req.body.replyToId || null,
+                groupId: req.body.groupId || null,
+                durationMs: Number.isFinite(durationMs) ? durationMs : null,
+                waveform: req.body.waveform || null,
+            }
         );
         const io = req.app.get('io');
         if (io) await emitToParticipants(io, req.params.id, 'message:new', message);

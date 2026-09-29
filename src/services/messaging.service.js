@@ -31,9 +31,10 @@ async function isParticipant(conversationId, userId) {
 const MESSAGE_SELECT_SQL = `
     SELECT m.id, m.conversation_id, m.sender_id, m.content, m.media_url, m.type, m.status,
            m.is_pinned, m.edited_at, m.deleted_for_everyone, m.is_forwarded, m.forwarded_from_username,
-           m.reply_to_id,
+           m.group_id, m.duration_ms, m.waveform, m.reply_to_id,
            rt.content AS reply_to_content, rt.type AS reply_to_type,
            rt.sender_username AS reply_to_sender_username, rt.deleted_for_everyone AS reply_to_deleted,
+           COALESCE(rx.reactions, '[]'::json) AS reactions,
            m.created_at
     FROM messages m
     LEFT JOIN LATERAL (
@@ -41,6 +42,11 @@ const MESSAGE_SELECT_SQL = `
         FROM messages rm JOIN users ru ON ru.id = rm.sender_id
         WHERE rm.id = m.reply_to_id
     ) rt ON true
+    LEFT JOIN LATERAL (
+        SELECT json_agg(json_build_object('userId', mr.user_id, 'emoji', mr.emoji)) AS reactions
+        FROM message_reactions mr
+        WHERE mr.message_id = m.id
+    ) rx ON true
 `;
 
 async function fetchMessageById(id) {
@@ -184,7 +190,7 @@ async function listMessages(conversationId, userId, { limit, cursor } = {}) {
 // mediaUrl berilsa — rasm/video xabari (content ixtiyoriy, izoh sifatida);
 // berilmasa — oddiy matnli xabar (content majburiy). replyToId berilsa —
 // shu suhbatdagi mavjud xabarga javob sifatida bog'lanadi.
-async function sendMessage(conversationId, senderId, content, { mediaUrl, type, replyToId } = {}) {
+async function sendMessage(conversationId, senderId, content, { mediaUrl, type, replyToId, groupId, durationMs, waveform } = {}) {
     if (!(await isParticipant(conversationId, senderId))) {
         throw httpError('Bu suhbatga kirish huquqingiz yo\'q', 403);
     }
@@ -201,10 +207,13 @@ async function sendMessage(conversationId, senderId, content, { mediaUrl, type, 
     }
 
     const { rows } = await pool.query(
-        `INSERT INTO messages (conversation_id, sender_id, content, media_url, type, status, reply_to_id)
-         VALUES ($1, $2, $3, $4, $5, 'sent', $6)
+        `INSERT INTO messages (conversation_id, sender_id, content, media_url, type, status, reply_to_id, group_id, duration_ms, waveform)
+         VALUES ($1, $2, $3, $4, $5, 'sent', $6, $7, $8, $9)
          RETURNING id`,
-        [conversationId, senderId, trimmed, mediaUrl || null, type || 'text', replyToId || null]
+        [
+            conversationId, senderId, trimmed, mediaUrl || null, type || 'text',
+            replyToId || null, groupId || null, durationMs || null, waveform || null,
+        ]
     );
     return fetchMessageById(rows[0].id);
 }
@@ -271,6 +280,38 @@ async function setPinned(messageId, userId, pinned) {
     if (!rows[0]) throw httpError('Xabar topilmadi', 404);
     await pool.query('UPDATE messages SET is_pinned = $1 WHERE id = $2', [pinned, messageId]);
     return fetchMessageById(messageId);
+}
+
+// ---------- Xabarga emoji reaksiya qoldirish ----------
+// Har bir foydalanuvchi bitta xabarga faqat BITTA emoji qo'ya oladi: xuddi
+// shu emoji qayta yuborilsa — o'chadi (toggle), boshqa emoji yuborilsa —
+// avvalgisi almashadi.
+async function setReaction(messageId, userId, emoji) {
+    const { rows } = await pool.query(
+        `SELECT m.conversation_id FROM messages m
+         JOIN conversation_participants cp ON cp.conversation_id = m.conversation_id AND cp.user_id = $2
+         WHERE m.id = $1`,
+        [messageId, userId]
+    );
+    if (!rows[0]) throw httpError('Xabar topilmadi', 404);
+
+    const existing = await pool.query(
+        'SELECT emoji FROM message_reactions WHERE message_id = $1 AND user_id = $2',
+        [messageId, userId]
+    );
+    if (existing.rows[0]?.emoji === emoji) {
+        await pool.query(
+            'DELETE FROM message_reactions WHERE message_id = $1 AND user_id = $2',
+            [messageId, userId]
+        );
+    } else {
+        await pool.query(
+            `INSERT INTO message_reactions (message_id, user_id, emoji) VALUES ($1, $2, $3)
+             ON CONFLICT (message_id, user_id) DO UPDATE SET emoji = EXCLUDED.emoji, created_at = NOW()`,
+            [messageId, userId, emoji]
+        );
+    }
+    return { message: await fetchMessageById(messageId), conversationId: rows[0].conversation_id };
 }
 
 // ---------- Suhbatdagi joriy pin qilingan xabar (eng so'nggisi) ----------
@@ -341,6 +382,7 @@ module.exports = {
     deleteForMe,
     deleteForEveryone,
     setPinned,
+    setReaction,
     getPinnedMessage,
     forwardMessage,
     markConversationRead,
