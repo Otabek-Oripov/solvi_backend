@@ -86,4 +86,15 @@ async function getMatches(req, res) {
     }
 }
 
-module.exports = { getCandidates, swipe, getMatches };
+// GET /matching/likes — "Sevimlilar" (o'zim like qilganlar), profil
+// sahifasida follow tugmalari bilan ko'rsatish uchun.
+async function getLikedUsers(req, res) {
+    try {
+        const users = await matchingService.getLikedUsers(req.userId);
+        res.json({ users });
+    } catch (err) {
+        handleError(res, err);
+    }
+}
+
+module.exports = { getCandidates, swipe, getMatches, getLikedUsers };

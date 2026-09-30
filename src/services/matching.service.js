@@ -200,4 +200,22 @@ async function getMatches(userId) {
     return rows;
 }
 
-module.exports = { getCandidates, swipe, getMatches };
+// ---------- "Sevimlilar" — o'zim "like" qilgan foydalanuvchilar ----------
+// Match bo'lgan-bo'lmaganidan qat'iy nazar, faqat MEN like qilganlar
+// (Profil sahifasidagi "Sevimlilar" bo'limi, follow tugmalari bilan).
+async function getLikedUsers(userId) {
+    const { rows } = await pool.query(
+        `SELECT u.id, u.username, u.full_name, u.avatar_url, u.status, s.created_at,
+                EXISTS(
+                    SELECT 1 FROM follows f WHERE f.follower_id = $1 AND f.following_id = u.id
+                ) AS is_following
+         FROM swipes s
+         JOIN users u ON u.id = s.target_id
+         WHERE s.swiper_id = $1 AND s.action = 'like' AND u.is_active = true
+         ORDER BY s.created_at DESC`,
+        [userId]
+    );
+    return rows;
+}
+
+module.exports = { getCandidates, swipe, getMatches, getLikedUsers };

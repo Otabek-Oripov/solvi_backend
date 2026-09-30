@@ -33,5 +33,6 @@ router.post(
 );
 
 router.get('/matches', requireAuth, controller.getMatches);
+router.get('/likes', requireAuth, controller.getLikedUsers);
 
 module.exports = router;
