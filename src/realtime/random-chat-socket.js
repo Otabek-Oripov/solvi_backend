@@ -1,4 +1,5 @@
 const callManager = require('./call-manager');
+const usersService = require('./../services/users.service');
 
 // Omegle uslubidagi tasodifiy 1:1 video/audio chat — navbat xotirada
 // saqlanadi (xuddi qo'ng'iroqlar kabi), juftlashtirilgach mavjud mesh
@@ -6,7 +7,7 @@ const callManager = require('./call-manager');
 // ishlatiladi — signalizatsiya xuddi oddiy qo'ng'iroqdagidek `call:signal`
 // orqali boradi, faqat "kim kimga qo'ng'iroq qildi" bosqichi yo'q.
 
-// { userId, video, reportedPartnerIds: Set<string> }
+// { userId, video }
 const queue = [];
 
 function removeFromQueue(userId) {
@@ -14,10 +15,15 @@ function removeFromQueue(userId) {
     if (idx !== -1) queue.splice(idx, 1);
 }
 
+function toPeerInfo(user) {
+    if (!user) return null;
+    return { id: user.id, username: user.username, fullName: user.full_name, avatarUrl: user.avatar_url };
+}
+
 function registerRandomChatHandlers(io, socket) {
     const userId = socket.userId;
 
-    socket.on('random:join-queue', ({ video } = {}, ack) => {
+    socket.on('random:join-queue', async ({ video } = {}, ack) => {
         try {
             const isVideo = !!video;
             if (queue.some((q) => q.userId === userId)) {
@@ -34,11 +40,16 @@ function registerRandomChatHandlers(io, socket) {
                 userBId: userId,
                 video: isVideo,
             });
+            const [myInfo, partnerInfo] = await Promise.all([
+                usersService.getPublicSummary(userId),
+                usersService.getPublicSummary(partner.userId),
+            ]);
             // Navbatda oldin kutgan tomon — javob kutadi (offer yubormaydi),
             // hozir qo'shilgan tomon — offer yaratadi (glare bo'lmasligi uchun).
             io.to(`user:${partner.userId}`).emit('random:matched', {
                 callId: call.id,
                 peerId: userId,
+                peer: toPeerInfo(myInfo),
                 isOfferer: false,
                 video: call.video,
             });
@@ -47,10 +58,12 @@ function registerRandomChatHandlers(io, socket) {
                 matched: true,
                 callId: call.id,
                 peerId: partner.userId,
+                peer: toPeerInfo(partnerInfo),
                 isOfferer: true,
                 video: call.video,
             });
         } catch (err) {
+            console.error('[random] join-queue error:', err);
             ack?.({ error: err.message });
         }
     });

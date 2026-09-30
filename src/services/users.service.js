@@ -350,8 +350,20 @@ async function userExists(userId) {
     return !!rows[0];
 }
 
+// Yengil ochiq profil — masalan tasodifiy chatda sherikning ismi/rasmini
+// darhol ko'rsatish uchun (to'liq getProfile'dagi kabi followers/posts
+// sonini hisoblashning hojati yo'q).
+async function getPublicSummary(userId) {
+    const { rows } = await pool.query(
+        'SELECT id, username, full_name, avatar_url FROM users WHERE id = $1 AND is_active = true',
+        [userId]
+    );
+    return rows[0] || null;
+}
+
 module.exports = {
     getProfile,
+    getPublicSummary,
     userExists,
     updateProfile,
     listPhotos,

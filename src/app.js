@@ -6,6 +6,7 @@ const authRoutes = require('./routes/auth.routes');
 const usersRoutes = require('./routes/users.routes');
 const postsRoutes = require('./routes/posts.routes');
 const messagingRoutes = require('./routes/messaging.routes');
+const matchingRoutes = require('./routes/matching.routes');
 const { UPLOAD_DIR } = require('./middlewares/upload.middleware');
 
 const app = express();
@@ -64,6 +65,7 @@ const apiLimiter = rateLimit({
 app.use('/users', apiLimiter, usersRoutes);
 app.use('/posts', apiLimiter, postsRoutes);
 app.use('/conversations', apiLimiter, messagingRoutes);
+app.use('/matching', apiLimiter, matchingRoutes);
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 

@@ -144,6 +144,25 @@ function registerCallHandlers(io, socket) {
     socket.on('call:leave', ({ callId } = {}) => {
         leaveCall(io, callId, userId);
     });
+
+    // Qo'ng'iroq davomidagi matnli xabar (masalan tasodifiy chatda) — shu
+    // qo'ng'iroqning boshqa ishtirokchilariga relay qilinadi, saqlanmaydi.
+    socket.on('call:message', ({ callId, text } = {}) => {
+        const call = callManager.getCall(callId);
+        if (!call || !call.participants.has(userId)) return;
+        const trimmed = typeof text === 'string' ? text.trim().slice(0, 1000) : '';
+        if (!trimmed) return;
+        for (const [peerId] of call.participants) {
+            if (peerId !== userId) {
+                io.to(`user:${peerId}`).emit('call:message', {
+                    callId,
+                    fromUserId: userId,
+                    text: trimmed,
+                    at: Date.now(),
+                });
+            }
+        }
+    });
 }
 
 // Foydalanuvchining OXIRGI socket'i uzilganda (butunlay offline bo'lganda)
