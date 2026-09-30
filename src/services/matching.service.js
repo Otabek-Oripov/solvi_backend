@@ -18,20 +18,98 @@ const CANDIDATE_FIELDS = `
     u.pets, u.religion, u.core_values, u.interests, u.languages_known
 `;
 
+// ---------- Filtr (Search filters) asosida SQL WHERE qismini quradi ----------
+function buildFilterClause(filters, params) {
+    let clause = '';
+
+    const addEquals = (column, value) => {
+        if (value == null || value === '') return;
+        params.push(value);
+        clause += ` AND u.${column} = $${params.length}`;
+    };
+    const addIn = (column, values) => {
+        if (!Array.isArray(values) || values.length === 0) return;
+        params.push(values);
+        clause += ` AND u.${column} = ANY($${params.length})`;
+    };
+    const addOverlap = (column, values) => {
+        if (!Array.isArray(values) || values.length === 0) return;
+        params.push(values);
+        clause += ` AND u.${column} && $${params.length}`;
+    };
+    const addRange = (column, min, max) => {
+        if (min != null && !Number.isNaN(min)) {
+            params.push(min);
+            clause += ` AND u.${column} >= $${params.length}`;
+        }
+        if (max != null && !Number.isNaN(max)) {
+            params.push(max);
+            clause += ` AND u.${column} <= $${params.length}`;
+        }
+    };
+
+    addEquals('gender', filters.gender);
+
+    // Yosh oralig'i — birth_date bo'yicha teskari hisoblanadi (katta yosh =
+    // kichikroq/eskiroq sana).
+    if (filters.maxAge != null && !Number.isNaN(filters.maxAge)) {
+        const minBirthDate = new Date();
+        minBirthDate.setFullYear(minBirthDate.getFullYear() - filters.maxAge - 1);
+        params.push(minBirthDate.toISOString().slice(0, 10));
+        clause += ` AND u.birth_date >= $${params.length}`;
+    }
+    if (filters.minAge != null && !Number.isNaN(filters.minAge)) {
+        const maxBirthDate = new Date();
+        maxBirthDate.setFullYear(maxBirthDate.getFullYear() - filters.minAge);
+        params.push(maxBirthDate.toISOString().slice(0, 10));
+        clause += ` AND u.birth_date <= $${params.length}`;
+    }
+
+    if (filters.locationCity) {
+        params.push(`%${filters.locationCity}%`);
+        clause += ` AND u.location_city ILIKE $${params.length}`;
+    }
+
+    addRange('height_cm', filters.minHeight, filters.maxHeight);
+    addRange('weight_kg', filters.minWeight, filters.maxWeight);
+
+    addIn('goal', filters.goals);
+    addIn('education_level', filters.educationLevels);
+    addIn('marital_status', filters.maritalStatuses);
+    addIn('has_kids', filters.hasKids);
+    addIn('drinking', filters.drinking);
+    addIn('smoking', filters.smoking);
+    addIn('pets', filters.pets);
+    addIn('religion', filters.religion);
+    addIn('core_values', filters.coreValues);
+    addIn('star_sign', filters.starSigns);
+    addIn('exercise', filters.exercise);
+    addOverlap('languages_known', filters.languages);
+    addOverlap('interests', filters.interests);
+
+    return clause;
+}
+
 // ---------- Navbatdagi swipe kartalari ----------
 // O'zi va allaqachon swipe qilingan (like/pass) foydalanuvchilar chiqarib
 // tashlanadi — bir marta "pass" qilingan odam qayta ko'rsatilmaydi.
-async function getCandidates(userId, { limit } = {}) {
+// `filters` — "Search filters" ekranidan kelgan ixtiyoriy qidiruv shartlari.
+async function getCandidates(userId, { limit, filters = {} } = {}) {
     const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 50);
+    const params = [userId];
+    const filterClause = buildFilterClause(filters, params);
+    params.push(safeLimit);
+
     const { rows } = await pool.query(
         `SELECT ${CANDIDATE_FIELDS}
          FROM users u
          WHERE u.id <> $1
            AND u.is_active = true
            AND NOT EXISTS (SELECT 1 FROM swipes s WHERE s.swiper_id = $1 AND s.target_id = u.id)
+           ${filterClause}
          ORDER BY u.created_at DESC
-         LIMIT $2`,
-        [userId, safeLimit]
+         LIMIT $${params.length}`,
+        params
     );
     if (rows.length === 0) return rows;
 

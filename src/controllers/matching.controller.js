@@ -7,10 +7,47 @@ function handleError(res, err) {
     res.status(status).json({ error: err.message || 'Server xatosi' });
 }
 
-// GET /matching/candidates — swipe uchun navbatdagi kartalar
+// "a,b,c" -> ['a','b','c'] (bo'sh/berilmagan bo'lsa undefined)
+function parseList(value) {
+    if (!value) return undefined;
+    return String(value).split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+function parseNum(value) {
+    if (value === undefined || value === '') return undefined;
+    const n = Number(value);
+    return Number.isNaN(n) ? undefined : n;
+}
+
+// GET /matching/candidates — swipe uchun navbatdagi kartalar (Search
+// filters ekranidan kelgan ixtiyoriy so'rov parametrlari bilan).
 async function getCandidates(req, res) {
     try {
-        const candidates = await matchingService.getCandidates(req.userId, { limit: req.query.limit });
+        const q = req.query;
+        const filters = {
+            gender: q.gender || undefined,
+            minAge: parseNum(q.minAge),
+            maxAge: parseNum(q.maxAge),
+            locationCity: q.locationCity || undefined,
+            minHeight: parseNum(q.minHeight),
+            maxHeight: parseNum(q.maxHeight),
+            minWeight: parseNum(q.minWeight),
+            maxWeight: parseNum(q.maxWeight),
+            goals: parseList(q.goals),
+            educationLevels: parseList(q.educationLevels),
+            maritalStatuses: parseList(q.maritalStatuses),
+            hasKids: parseList(q.hasKids),
+            drinking: parseList(q.drinking),
+            smoking: parseList(q.smoking),
+            pets: parseList(q.pets),
+            religion: parseList(q.religion),
+            coreValues: parseList(q.coreValues),
+            starSigns: parseList(q.starSigns),
+            exercise: parseList(q.exercise),
+            languages: parseList(q.languages),
+            interests: parseList(q.interests),
+        };
+        const candidates = await matchingService.getCandidates(req.userId, { limit: q.limit, filters });
         res.json({ candidates });
     } catch (err) {
         handleError(res, err);
