@@ -2,9 +2,25 @@ const express = require('express');
 const { body, param, validationResult } = require('express-validator');
 const controller = require('../controllers/messaging.controller');
 const { requireAuth } = require('../middlewares/auth.middleware');
-const { uploadChatMedia } = require('../middlewares/upload.middleware');
+const { uploadChatMedia, cleanupUploadsOnError } = require('../middlewares/upload.middleware');
+const messagingService = require('../services/messaging.service');
+const { isUuid } = require('../utils/http');
 
 const router = express.Router();
+
+// Fayl (100 MB gacha) diskka yozilishidan OLDIN tekshiriladi: suhbatga
+// aloqasi yo'q foydalanuvchi serverga fayl yuklay olmasligi kerak.
+async function requireParticipant(req, res, next) {
+    try {
+        if (!isUuid(req.params.id)) return res.status(400).json({ error: 'ID noto\'g\'ri' });
+        if (!(await messagingService.isParticipant(req.params.id, req.userId))) {
+            return res.status(403).json({ error: 'Bu suhbatga kirish huquqingiz yo\'q' });
+        }
+        next();
+    } catch (err) {
+        next(err);
+    }
+}
 
 function validate(req, res, next) {
     const errors = validationResult(req);
@@ -38,6 +54,8 @@ router.get(
 router.post(
     '/:id/messages',
     requireAuth,
+    requireParticipant,
+    cleanupUploadsOnError,
     uploadChatMedia,
     [
         param('id').isUUID().withMessage('ID noto\'g\'ri'),

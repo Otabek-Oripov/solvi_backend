@@ -2,6 +2,8 @@ const pool = require('../config/db');
 const { hashPassword, comparePassword, hashToken, generateRandomToken } = require('../utils/hash');
 const { generateAccessToken } = require('../utils/jwt');
 const otpService = require('./otp.service');
+const validator = require('validator');
+const { httpError } = require('../utils/http');
 
 const REFRESH_EXPIRES_DAYS = parseInt(process.env.JWT_REFRESH_EXPIRES_DAYS || '30', 10);
 const MIN_AGE = parseInt(process.env.MIN_AGE || '18', 10);
@@ -10,14 +12,15 @@ const MIN_AGE = parseInt(process.env.MIN_AGE || '18', 10);
 const PUBLIC_USER_FIELDS =
     'id, email, username, full_name, avatar_url, bio, birth_date, gender, is_verified, status, created_at';
 
-function httpError(message, status) {
-    const err = new Error(message);
-    err.status = status;
-    return err;
-}
-
+// Bazada email har doim BIR XIL shaklda turishi shart: route'dagi
+// express-validator ham xuddi shu validator.normalizeEmail'ni ishlatadi
+// (Gmail'da nuqtalar va "+tag" olib tashlanadi). Google/Facebook'dan kelgan
+// email ham shu yerdan o'tadi — aks holda "o.tabek@gmail.com" bilan
+// ro'yxatdan o'tgan odam Google orqali kirganda ikkinchi hisob ochilardi.
 function normalizeEmail(email) {
-    return email ? String(email).trim().toLowerCase() : null;
+    if (!email) return null;
+    const trimmed = String(email).trim().toLowerCase();
+    return validator.normalizeEmail(trimmed) || trimmed;
 }
 
 function calcAge(birthDate) {
@@ -75,30 +78,52 @@ async function registerWithEmail({ email, password, username, fullName, birthDat
     try {
         await client.query('BEGIN');
 
-        const dup = await client.query(
-            'SELECT email, username FROM users WHERE email = $1 OR username = $2',
-            [mail, username]
+        const existing = await client.query(
+            'SELECT id, is_verified FROM users WHERE email = $1 FOR UPDATE',
+            [mail]
         );
-        if (dup.rows.length > 0) {
-            const message = dup.rows.some((r) => r.email === mail)
-                ? 'Bu email allaqachon ro\'yxatdan o\'tgan'
-                : 'Bu username band';
-            throw httpError(message, 409);
+        const pending = existing.rows[0];
+        if (pending && pending.is_verified) {
+            throw httpError('Bu email allaqachon ro\'yxatdan o\'tgan', 409);
         }
+
+        const nameDup = await client.query(
+            'SELECT 1 FROM users WHERE username = $1 AND id IS DISTINCT FROM $2',
+            [username, pending ? pending.id : null]
+        );
+        if (nameDup.rows.length > 0) throw httpError('Bu username band', 409);
 
         const passwordHash = await hashPassword(password);
 
-        const userResult = await client.query(
-            `INSERT INTO users (email, password_hash, username, full_name, birth_date)
-             VALUES ($1, $2, $3, $4, $5)
-             RETURNING ${PUBLIC_USER_FIELDS}`,
-            [mail, passwordHash, username, fullName || null, birthDate]
-        );
-        const user = userResult.rows[0];
+        let user;
+        if (pending) {
+            // Email hali tasdiqlanmagan — bu hisob hali hech kimniki emas
+            // (kod kelmagan yoki ilova yopilib qolgan). Qayta ro'yxatdan
+            // o'tishga ruxsat beramiz: ma'lumotlar yangilanadi va yangi kod
+            // yuboriladi. Aks holda foydalanuvchi na kira oladi, na qayta
+            // ro'yxatdan o'ta oladi.
+            const updated = await client.query(
+                `UPDATE users
+                 SET password_hash = $1, username = $2, full_name = $3, birth_date = $4
+                 WHERE id = $5
+                 RETURNING ${PUBLIC_USER_FIELDS}`,
+                [passwordHash, username, fullName || null, birthDate, pending.id]
+            );
+            user = updated.rows[0];
+        } else {
+            const inserted = await client.query(
+                `INSERT INTO users (email, password_hash, username, full_name, birth_date)
+                 VALUES ($1, $2, $3, $4, $5)
+                 RETURNING ${PUBLIC_USER_FIELDS}`,
+                [mail, passwordHash, username, fullName || null, birthDate]
+            );
+            user = inserted.rows[0];
+        }
 
         await client.query(
             `INSERT INTO auth_providers (user_id, provider, provider_user_id, email_at_provider)
-             VALUES ($1, 'email', $2, $3)`,
+             VALUES ($1, 'email', $2, $3)
+             ON CONFLICT (provider, provider_user_id) DO NOTHING`,
             [user.id, mail, mail]
         );
 
@@ -134,7 +159,13 @@ async function loginWithEmail({ email, password, deviceInfo }) {
     }
     if (!user.is_active) throw httpError('Hisob bloklangan', 403);
     if (!user.is_verified) {
-        throw httpError('Email tasdiqlanmagan. Avval emailingizga yuborilgan kodni tasdiqlang.', 403);
+        // Parol to'g'ri ekani yuqorida tekshirildi — klient shu kod bo'yicha
+        // foydalanuvchini tasdiqlash ekraniga o'tkazadi.
+        throw httpError(
+            'Email tasdiqlanmagan. Avval emailingizga yuborilgan kodni tasdiqlang.',
+            403,
+            'EMAIL_NOT_VERIFIED'
+        );
     }
 
     await pool.query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [user.id]);
@@ -161,10 +192,27 @@ async function findOrCreateOAuthUser({ provider, providerUserId, email, fullName
 
         // 2) Bog'lanmagan, lekin shu email bilan boshqa usulda ro'yxatdan o'tganmi?
         if (!userId && mail) {
-            const existingUser = await client.query('SELECT id FROM users WHERE email = $1', [mail]);
+            const existingUser = await client.query(
+                'SELECT id, is_verified FROM users WHERE email = $1',
+                [mail]
+            );
             if (existingUser.rows.length > 0) {
                 // Mavjud hisobga yangi kirish usulini bog'laymiz (account linking)
                 userId = existingUser.rows[0].id;
+                if (!existingUser.rows[0].is_verified) {
+                    // Provider emailni tasdiqlagan — hisob endi shu odamniki.
+                    // Tasdiqlanmagan holatda kimdir (ehtimol begona) qo'ygan
+                    // parol o'chiriladi, aks holda u shu parol bilan egasining
+                    // hisobiga kira olishi mumkin edi.
+                    await client.query(
+                        'UPDATE users SET is_verified = true, password_hash = NULL WHERE id = $1',
+                        [userId]
+                    );
+                    await client.query(
+                        `DELETE FROM auth_providers WHERE user_id = $1 AND provider = 'email'`,
+                        [userId]
+                    );
+                }
                 await client.query(
                     `INSERT INTO auth_providers (user_id, provider, provider_user_id, email_at_provider)
                      VALUES ($1, $2, $3, $4)

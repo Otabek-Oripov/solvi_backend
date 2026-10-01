@@ -8,10 +8,18 @@ const postsRoutes = require('./routes/posts.routes');
 const messagingRoutes = require('./routes/messaging.routes');
 const matchingRoutes = require('./routes/matching.routes');
 const { UPLOAD_DIR } = require('./middlewares/upload.middleware');
+const { handleError } = require('./utils/http');
 
 const app = express();
 
-app.set('trust proxy', 1); // Nginx orqasida to'g'ri IP olish uchun (rate limit)
+// X-Forwarded-For sarlavhasiga FAQAT server haqiqatan ham proxy (Nginx)
+// orqasida turganda ishonamiz. Proxy yo'q bo'lsa (lokal ishga tushirish),
+// bu sarlavhani istalgan klient o'zi yozib, rate limit'ni aylanib o'tardi.
+// Serverga chiqarilganda .env'da TRUST_PROXY=1 qo'yiladi.
+if (process.env.TRUST_PROXY) {
+    const hops = Number(process.env.TRUST_PROXY);
+    app.set('trust proxy', Number.isNaN(hops) ? process.env.TRUST_PROXY : hops);
+}
 
 // helmet cross-origin siyosati rasm fayllarni <img> orqali ko'rsatishga
 // to'sqinlik qilmasligi uchun crossOriginResourcePolicy bo'shatiladi.
@@ -23,23 +31,32 @@ app.use(express.json({ limit: '1mb' }));
 // Cloudflare R2/S3'ga o'tkaziladi (SRS 5-bo'lim).
 app.use('/uploads', express.static(UPLOAD_DIR));
 
+// /auth/me (har safar ilova ochilganda) va /auth/refresh (har 15 daqiqada,
+// har bir qurilmadan) — oddiy ish jarayonining bir qismi, brute-force
+// nishoni emas. Bitta IP ortida ko'p foydalanuvchi bo'lishi mumkin (ofis
+// Wi-Fi, mobil operator), shuning uchun ular qattiq authLimiter'ga
+// tushmaydi — alohida, kengroq limit oladi.
+const SESSION_PATHS = ['/me', '/refresh'];
+
 // Brute-force'dan himoya: auth endpointlariga daqiqasiga cheklangan so'rov
 const authLimiter = rateLimit({
     windowMs: 60 * 1000,
     max: 20,
     standardHeaders: true,
     legacyHeaders: false,
+    skip: (req) => SESSION_PATHS.includes(req.path),
     message: { error: 'Juda ko\'p urinish. Birozdan keyin qayta urinib ko\'ring.' },
 });
 
-// /auth/me har safar ilova ochilganda chaqiriladi — unga kengroq limit
-const meLimiter = rateLimit({
+const sessionLimiter = rateLimit({
     windowMs: 60 * 1000,
     max: 120,
     standardHeaders: true,
     legacyHeaders: false,
+    message: { error: 'Juda ko\'p so\'rov. Birozdan keyin qayta urinib ko\'ring.' },
 });
-app.use('/auth/me', meLimiter);
+app.use('/auth/me', sessionLimiter);
+app.use('/auth/refresh', sessionLimiter);
 
 // Register/resend-code emailga xabar yuboradi — bularni alohida qattiqroq
 // cheklaymiz, aks holda birov birovning emailini spam bilan to'ldirishi mumkin.
@@ -77,9 +94,9 @@ app.use((err, req, res, next) => {
     if (err.name === 'MulterError') {
         return res.status(400).json({ error: err.message });
     }
-    if (err.status !== 500) return res.status(err.status || 500).json({ error: err.message });
-    console.error(err);
-    res.status(500).json({ error: 'Server xatosi' });
+    // status'i bor (o'zimiz yoki express/body-parser qo'ygan 4xx) xatolargina
+    // matni bilan qaytariladi; qolgan hammasi — kutilmagan xato.
+    handleError(res, err);
 });
 
 module.exports = app;

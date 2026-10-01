@@ -1,19 +1,45 @@
 const callManager = require('./call-manager');
 const messagingService = require('../services/messaging.service');
 const usersService = require('../services/users.service');
+const { isUuid } = require('../utils/http');
 
 // Audio/video qo'ng'iroqlar mesh (P2P) tarzida ishlaydi: server faqat SDP/ICE
 // signalini ishtirokchilar orasida uzatadi, media to'g'ridan-to'g'ri
 // qurilmalar orasida oqadi. Max 4 ishtirokchi (har biri qolgan 3 tasi bilan
 // to'g'ridan-to'g'ri ulanadi) — shu hajmda mesh SFU serversiz yetarli.
 
+// Bu yerdagi xatolar — foydalanuvchiga ko'rsatiladigan tayyor matnlar.
+function callError(message) {
+    const err = new Error(message);
+    err.status = 400;
+    return err;
+}
+
+function ackError(err) {
+    if (err.status && err.status < 500) return err.message;
+    console.error('[call]', err);
+    return 'Server xatosi';
+}
+
 function leaveCall(io, callId, userId) {
     const call = callManager.getCall(callId);
-    if (!call) return;
+    if (!call || !call.participants.has(userId)) return;
     callManager.removeParticipant(call, userId);
     for (const [peerId] of call.participants) {
         io.to(`user:${peerId}`).emit('call:peer-left', { callId, userId });
     }
+
+    // Qo'ng'iroqda hech kim qolmagan bo'lsa (faqat hali javob bermagan
+    // taklif qilinganlar qolgan) — ularning "jiringlayotgan" ekrani
+    // yopilishi kerak, qo'ng'iroq esa tugaydi.
+    if (callManager.joinedParticipantIds(call).length === 0) {
+        for (const [peerId] of call.participants) {
+            io.to(`user:${peerId}`).emit('call:cancelled', { callId });
+        }
+        callManager.removeCall(callId);
+        return;
+    }
+
     if (call.participants.size <= 1) {
         for (const [peerId] of call.participants) {
             io.to(`user:${peerId}`).emit('call:ended', { callId });
@@ -22,85 +48,109 @@ function leaveCall(io, callId, userId) {
     }
 }
 
+// Taklif qilingan kishi RING_TIMEOUT_MS ichida javob bermadi.
+function handleNoAnswer(io, callId, userId) {
+    const call = callManager.getCall(callId);
+    if (!call || !callManager.isInvited(call, userId)) return;
+    io.to(`user:${userId}`).emit('call:cancelled', { callId });
+    for (const [peerId] of call.participants) {
+        if (peerId !== userId) {
+            io.to(`user:${peerId}`).emit('call:rejected', { callId, userId, reason: 'no-answer' });
+        }
+    }
+    leaveCall(io, callId, userId);
+}
+
+function ringCallee(io, call, calleeId) {
+    io.to(`user:${calleeId}`).emit('call:incoming', {
+        callId: call.id,
+        conversationId: call.conversationId,
+        callerId: call.callerId,
+        video: call.video,
+    });
+    callManager.startRingTimer(call, calleeId, () => handleNoAnswer(io, call.id, calleeId));
+}
+
+function parseCalleeIds(calleeIds, emptyMessage) {
+    if (!Array.isArray(calleeIds) || calleeIds.length === 0) throw callError(emptyMessage);
+    if (!calleeIds.every(isUuid)) throw callError('Foydalanuvchi topilmadi');
+    return [...new Set(calleeIds.map((id) => id.toLowerCase()))];
+}
+
 function registerCallHandlers(io, socket) {
     const userId = socket.userId;
 
     socket.on('call:invite', async ({ conversationId, calleeIds, video } = {}, ack) => {
         try {
-            if (!Array.isArray(calleeIds) || calleeIds.length === 0) {
-                throw new Error('Kimga qo\'ng\'iroq qilishni tanlang');
+            const ids = parseCalleeIds(calleeIds, 'Kimga qo\'ng\'iroq qilishni tanlang').filter(
+                (id) => id !== userId
+            );
+            if (ids.length === 0) throw callError('Kimga qo\'ng\'iroq qilishni tanlang');
+            if (ids.length + 1 > callManager.MAX_PARTICIPANTS) {
+                throw callError(`Bir qo'ng'iroqqa max ${callManager.MAX_PARTICIPANTS} kishi qo'shilishi mumkin`);
             }
-            if (calleeIds.length + 1 > callManager.MAX_PARTICIPANTS) {
-                throw new Error(`Bir qo'ng'iroqqa max ${callManager.MAX_PARTICIPANTS} kishi qo'shilishi mumkin`);
+            if (!isUuid(conversationId)) throw callError('Ruxsat yo\'q');
+
+            // Qo'ng'iroq shu SUHBAT ichidan boshlanadi — faqat shu suhbat
+            // ishtirokchilarini chaqirish mumkin. Aks holda istalgan odam
+            // o'ziga notanish har qanday foydalanuvchiga qo'ng'iroq qila olardi.
+            const participantIds = await messagingService.listParticipantIds(conversationId);
+            if (!participantIds.includes(userId)) throw callError('Ruxsat yo\'q');
+            if (!ids.every((id) => participantIds.includes(id))) {
+                throw callError('Faqat shu suhbat ishtirokchisiga qo\'ng\'iroq qilish mumkin');
             }
-            if (!(await messagingService.isParticipant(conversationId, userId))) {
-                throw new Error('Ruxsat yo\'q');
-            }
-            // Izoh: V1'da suhbatlar faqat 2 kishilik (is_group=false), shuning
-            // uchun qo'ng'iroqqa qo'shiladigan har bir kishi shu SUHBATNING
-            // ishtirokchisi bo'lishi shart emas — istalgan mavjud/faol
-            // foydalanuvchini chaqirish mumkin (masalan "+" bilan guruh
-            // qo'ng'irog'iga qo'shish uchun).
-            for (const calleeId of calleeIds) {
-                if (!(await usersService.userExists(calleeId))) {
-                    throw new Error('Foydalanuvchi topilmadi');
-                }
-            }
-            const call = callManager.createCall({ conversationId, callerId: userId, calleeIds, video });
-            for (const calleeId of calleeIds) {
-                io.to(`user:${calleeId}`).emit('call:incoming', {
-                    callId: call.id,
-                    conversationId,
-                    callerId: userId,
-                    video: call.video,
-                });
-            }
+
+            const call = callManager.createCall({ conversationId, callerId: userId, calleeIds: ids, video });
+            for (const calleeId of ids) ringCallee(io, call, calleeId);
             ack?.({ callId: call.id });
         } catch (err) {
-            ack?.({ error: err.message });
+            ack?.({ error: ackError(err) });
         }
     });
 
-    // Mavjud qo'ng'iroqqa yana kimnidir taklif qilish ("+" tugmasi) — max 4 kishigacha.
+    // Mavjud qo'ng'iroqqa yana kimnidir taklif qilish ("+" tugmasi) — max 4
+    // kishigacha. Bu yerda suhbat ishtirokchisi bo'lish shart emas (V1'da
+    // suhbatlar faqat 2 kishilik) — istalgan faol foydalanuvchini guruh
+    // qo'ng'irog'iga qo'shish mumkin, lekin faqat qo'ng'iroqqa allaqachon
+    // QO'SHILGAN kishi taklif qila oladi.
     socket.on('call:invite-more', async ({ callId, calleeIds } = {}, ack) => {
         try {
             const call = callManager.getCall(callId);
-            if (!call || !call.participants.has(userId)) throw new Error('Qo\'ng\'iroq topilmadi');
-            if (!Array.isArray(calleeIds) || calleeIds.length === 0) {
-                throw new Error('Kimni taklif qilishni tanlang');
+            if (!call || call.participants.get(userId)?.status !== 'joined') {
+                throw callError('Qo\'ng\'iroq topilmadi');
             }
-            if (call.participants.size + calleeIds.length > callManager.MAX_PARTICIPANTS) {
-                throw new Error(`Bir qo'ng'iroqqa max ${callManager.MAX_PARTICIPANTS} kishi qo'shilishi mumkin`);
+            const ids = parseCalleeIds(calleeIds, 'Kimni taklif qilishni tanlang').filter(
+                (id) => !call.participants.has(id)
+            );
+            if (ids.length === 0) throw callError('Bu foydalanuvchi allaqachon qo\'ng\'iroqda');
+            if (call.participants.size + ids.length > callManager.MAX_PARTICIPANTS) {
+                throw callError(`Bir qo'ng'iroqqa max ${callManager.MAX_PARTICIPANTS} kishi qo'shilishi mumkin`);
             }
-            for (const calleeId of calleeIds) {
-                if (!(await usersService.userExists(calleeId))) {
-                    throw new Error('Foydalanuvchi topilmadi');
-                }
-                if (!call.participants.has(calleeId)) call.participants.set(calleeId, { status: 'invited' });
+            for (const calleeId of ids) {
+                if (!(await usersService.userExists(calleeId))) throw callError('Foydalanuvchi topilmadi');
             }
-            for (const calleeId of calleeIds) {
-                io.to(`user:${calleeId}`).emit('call:incoming', {
-                    callId,
-                    conversationId: call.conversationId,
-                    callerId: call.callerId,
-                    video: call.video,
-                });
+            // Yuqoridagi await'lar davomida qo'ng'iroq tugab qolgan bo'lishi mumkin
+            if (callManager.getCall(callId) !== call) throw callError('Qo\'ng\'iroq topilmadi');
+
+            for (const calleeId of ids) {
+                call.participants.set(calleeId, { status: 'invited' });
+                ringCallee(io, call, calleeId);
             }
             ack?.({ ok: true });
         } catch (err) {
-            ack?.({ error: err.message });
+            ack?.({ error: ackError(err) });
         }
     });
 
     socket.on('call:accept', ({ callId } = {}, ack) => {
         try {
             const call = callManager.getCall(callId);
-            if (!call || !call.participants.has(userId)) throw new Error('Qo\'ng\'iroq topilmadi');
+            if (!call || !call.participants.has(userId)) throw callError('Qo\'ng\'iroq topilmadi');
 
             // Yangi qo'shilgan ishtirokchi mavjud har bir kishi bilan OFFER
             // yaratadi — shu tartib bilan ikki tomon bir vaqtda offer
             // yubormaydi ("glare" bo'lmaydi).
-            const existingPeers = callManager.joinedParticipantIds(call);
+            const existingPeers = callManager.joinedParticipantIds(call).filter((id) => id !== userId);
             callManager.markJoined(call, userId);
 
             for (const peerId of existingPeers) {
@@ -108,13 +158,13 @@ function registerCallHandlers(io, socket) {
             }
             ack?.({ ok: true, peers: existingPeers });
         } catch (err) {
-            ack?.({ error: err.message });
+            ack?.({ error: ackError(err) });
         }
     });
 
     socket.on('call:reject', ({ callId } = {}) => {
         const call = callManager.getCall(callId);
-        if (!call) return;
+        if (!call || !call.participants.has(userId)) return;
         for (const [peerId] of call.participants) {
             if (peerId !== userId) io.to(`user:${peerId}`).emit('call:rejected', { callId, userId });
         }

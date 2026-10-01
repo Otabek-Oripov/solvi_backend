@@ -4,6 +4,15 @@ const { verifyAccessToken } = require('../utils/jwt');
 const messagingService = require('../services/messaging.service');
 const { registerCallHandlers, handleUserFullyOffline } = require('./call-socket');
 const { registerRandomChatHandlers, removeFromQueue } = require('./random-chat-socket');
+const { httpError, isUuid } = require('../utils/http');
+
+// Ack orqali klientga faqat o'zimiz atayin tashlagan (status'i bor) xato
+// matni qaytadi; kutilmagan xato (masalan baza xatosi) matni sizib chiqmaydi.
+function ackError(err) {
+    if (err.status && err.status < 500) return err.message;
+    console.error(err);
+    return 'Server xatosi';
+}
 
 // Bitta foydalanuvchi bir nechta qurilmadan (socket) ulangan bo'lishi mumkin —
 // "online" holatini faqat ENG OXIRGI socket uzilganda "offline"ga o'zgartiramiz.
@@ -38,7 +47,13 @@ function initSocket(httpServer) {
             socket.userId = payload.userId;
             next();
         } catch {
-            next(new Error('Token yaroqsiz yoki muddati o\'tgan'));
+            // `data.code` — klient aynan shu belgi bo'yicha "token eskirgan,
+            // yangilab qayta ulan" deb tushunadi. Oddiy tarmoq xatosida
+            // (server o'chiq, internet yo'q) bu belgi bo'lmaydi va klient
+            // tokenni yangilashga urinmaydi.
+            const err = new Error('Token yaroqsiz yoki muddati o\'tgan');
+            err.data = { code: 'UNAUTHORIZED' };
+            next(err);
         }
     });
 
@@ -60,13 +75,14 @@ function initSocket(httpServer) {
         // tekshiriladi — clientning o'zi boshqa suhbat xabarlarini tinglay olmaydi.
         socket.on('conversation:join', async (conversationId, ack) => {
             try {
+                if (!isUuid(conversationId)) return ack?.({ error: 'ID noto\'g\'ri' });
                 if (!(await messagingService.isParticipant(conversationId, userId))) {
                     return ack?.({ error: 'Ruxsat yo\'q' });
                 }
                 socket.join(`conversation:${conversationId}`);
                 ack?.({ ok: true });
             } catch (err) {
-                ack?.({ error: err.message });
+                ack?.({ error: ackError(err) });
             }
         });
 
@@ -79,29 +95,37 @@ function initSocket(httpServer) {
 
         socket.on('message:send', async ({ conversationId, content, replyToId } = {}, ack) => {
             try {
+                if (!isUuid(conversationId) || (replyToId != null && !isUuid(replyToId))) {
+                    throw httpError('ID noto\'g\'ri', 400);
+                }
+                if (content != null && typeof content !== 'string') {
+                    throw httpError('Xabar matn bo\'lishi kerak', 400);
+                }
                 const message = await messagingService.sendMessage(conversationId, userId, content, { replyToId });
                 await emitToParticipants(io, conversationId, 'message:new', message);
                 ack?.({ message });
             } catch (err) {
-                ack?.({ error: err.message });
+                ack?.({ error: ackError(err) });
             }
         });
 
         socket.on('message:react', async ({ messageId, emoji } = {}, ack) => {
             try {
+                if (!isUuid(messageId)) throw httpError('ID noto\'g\'ri', 400);
                 if (!emoji || typeof emoji !== 'string' || emoji.length > 16) {
-                    throw new Error('Yaroqsiz emoji');
+                    throw httpError('Yaroqsiz emoji', 400);
                 }
                 const { message, conversationId } = await messagingService.setReaction(messageId, userId, emoji);
                 await emitToParticipants(io, conversationId, 'message:reaction_changed', message);
                 ack?.({ message });
             } catch (err) {
-                ack?.({ error: err.message });
+                ack?.({ error: ackError(err) });
             }
         });
 
         socket.on('message:read', async ({ conversationId } = {}, ack) => {
             try {
+                if (!isUuid(conversationId)) throw httpError('ID noto\'g\'ri', 400);
                 const messageIds = await messagingService.markConversationRead(conversationId, userId);
                 if (messageIds.length > 0) {
                     await emitToParticipants(io, conversationId, 'message:read', {
@@ -112,7 +136,7 @@ function initSocket(httpServer) {
                 }
                 ack?.({ ok: true });
             } catch (err) {
-                ack?.({ error: err.message });
+                ack?.({ error: ackError(err) });
             }
         });
 

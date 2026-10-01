@@ -34,5 +34,6 @@ router.post(
 
 router.get('/matches', requireAuth, controller.getMatches);
 router.get('/likes', requireAuth, controller.getLikedUsers);
+router.get('/liked-by', requireAuth, controller.getLikedByUsers);
 
 module.exports = router;

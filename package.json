@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "db:migrate": "psql -U postgres -d Solvi_base -f src/database/schema.sql"
+    "db:migrate": "node src/database/migrate.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
@@ -24,6 +24,7 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.4.0",
     "pg": "^8.13.1",
-    "socket.io": "^4.8.3"
+    "socket.io": "^4.8.3",
+    "validator": "^13.15.35"
   }
 }

@@ -2,12 +2,7 @@ const authService = require('../services/auth.service');
 const usersService = require('../services/users.service');
 const { verifyGoogleToken, verifyFacebookToken } = require('../services/oauthVerify.service');
 const otpService = require('../services/otp.service');
-
-function handleError(res, err) {
-    const status = err.status || 500;
-    if (status === 500) console.error(err);
-    res.status(status).json({ error: err.message || 'Server xatosi' });
-}
+const { handleError } = require('../utils/http');
 
 async function register(req, res) {
     try {

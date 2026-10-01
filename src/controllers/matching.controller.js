@@ -1,11 +1,6 @@
 const matchingService = require('../services/matching.service');
 const usersService = require('../services/users.service');
-
-function handleError(res, err) {
-    const status = err.status || 500;
-    if (status === 500) console.error(err);
-    res.status(status).json({ error: err.message || 'Server xatosi' });
-}
+const { handleError } = require('../utils/http');
 
 // "a,b,c" -> ['a','b','c'] (bo'sh/berilmagan bo'lsa undefined)
 function parseList(value) {
@@ -59,16 +54,21 @@ async function swipe(req, res) {
     try {
         const { targetId, action } = req.body;
         const result = await matchingService.swipe(req.userId, targetId, action);
+        const io = req.app.get('io');
         if (result.matched) {
             // Ikkinchi tomonga real-time "yangi match" xabari — u ham shu
             // zahoti "Matches" ro'yxatida ko'rishi uchun.
-            const io = req.app.get('io');
             const me = await usersService.getPublicSummary(req.userId);
-            io.to(`user:${targetId}`).emit('match:new', {
+            io.to(`user:${result.user.id}`).emit('match:new', {
                 matchId: result.matchId,
                 conversationId: result.conversationId,
                 user: me,
             });
+        } else if (action === 'like') {
+            // Hali o'zaro moslik hosil bo'lmadi — ikkinchi tomonning "Liked
+            // You" ro'yxati/nishoni darhol yangilanishi uchun xabar beramiz.
+            const me = await usersService.getPublicSummary(req.userId);
+            io.to(`user:${targetId}`).emit('like:received', { user: me });
         }
         res.json(result);
     } catch (err) {
@@ -97,4 +97,15 @@ async function getLikedUsers(req, res) {
     }
 }
 
-module.exports = { getCandidates, swipe, getMatches, getLikedUsers };
+// GET /matching/liked-by — meni like qilgan, hali javob bermagan
+// foydalanuvchilar ("Liked You" bo'limi, to'g'ridan-to'g'ri like/pass bilan).
+async function getLikedByUsers(req, res) {
+    try {
+        const candidates = await matchingService.getLikedByUsers(req.userId);
+        res.json({ candidates });
+    } catch (err) {
+        handleError(res, err);
+    }
+}
+
+module.exports = { getCandidates, swipe, getMatches, getLikedUsers, getLikedByUsers };

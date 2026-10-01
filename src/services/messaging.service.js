@@ -57,7 +57,17 @@ async function fetchMessageById(id) {
 // ---------- 1:1 suhbatni topish yoki yaratish ----------
 // V1: faqat ikki kishilik (is_group = false) suhbatlar. Ikkala foydalanuvchi
 // orasida allaqachon suhbat bo'lsa — o'shani qaytaradi, bo'lmasa yangi yaratadi.
-async function getOrCreateDirectConversation(userId, otherUserId) {
+//
+// Bir juftlik uchun faqat BITTA suhbat bo'lishini baza kafolatlaydi:
+// conversations.direct_key — ikki user id'sining tartiblangan juftligi,
+// UNIQUE. Shu tufayli ikki so'rov bir vaqtda kelsa ham (masalan o'zaro
+// "like"da) ikkita alohida suhbat ochilib qolmaydi.
+function directKeyFor(userAId, userBId) {
+    return [userAId, userBId].sort().join(':');
+}
+
+async function getOrCreateDirectConversation(userId, rawOtherUserId) {
+    const otherUserId = String(rawOtherUserId).toLowerCase();
     if (userId === otherUserId) {
         throw httpError('O\'zingiz bilan suhbat boshlab bo\'lmaydi', 400);
     }
@@ -68,28 +78,30 @@ async function getOrCreateDirectConversation(userId, otherUserId) {
     );
     if (!otherUser.rows[0]) throw httpError('Foydalanuvchi topilmadi', 404);
 
-    const existing = await pool.query(
-        `SELECT c.id
-         FROM conversations c
-         JOIN conversation_participants p1 ON p1.conversation_id = c.id AND p1.user_id = $1
-         JOIN conversation_participants p2 ON p2.conversation_id = c.id AND p2.user_id = $2
-         WHERE c.is_group = false
-         LIMIT 1`,
-        [userId, otherUserId]
-    );
-    if (existing.rows[0]) return getConversationSummary(existing.rows[0].id, userId);
-
+    const directKey = directKeyFor(userId, otherUserId);
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        const { rows } = await client.query(
-            'INSERT INTO conversations (is_group) VALUES (false) RETURNING id'
+        const created = await client.query(
+            `INSERT INTO conversations (is_group, direct_key) VALUES (false, $1)
+             ON CONFLICT (direct_key) DO NOTHING
+             RETURNING id`,
+            [directKey]
         );
-        const conversationId = rows[0].id;
-        await client.query(
-            `INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2), ($1, $3)`,
-            [conversationId, userId, otherUserId]
-        );
+        let conversationId;
+        if (created.rows[0]) {
+            conversationId = created.rows[0].id;
+            await client.query(
+                `INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2), ($1, $3)`,
+                [conversationId, userId, otherUserId]
+            );
+        } else {
+            const existing = await client.query(
+                'SELECT id FROM conversations WHERE direct_key = $1',
+                [directKey]
+            );
+            conversationId = existing.rows[0].id;
+        }
         await client.query('COMMIT');
         return getConversationSummary(conversationId, userId);
     } catch (err) {
@@ -98,6 +110,19 @@ async function getOrCreateDirectConversation(userId, otherUserId) {
     } finally {
         client.release();
     }
+}
+
+// Suhbat ro'yxatidagi "so'nggi xabar" va "o'qilmaganlar soni" faqat shu
+// foydalanuvchi chat ichida HAQIQATAN ko'radigan xabarlar bo'yicha
+// hisoblanadi: hammaga o'chirilgan yoki o'zi uchun o'chirgan xabarlar
+// kirmaydi (aks holda ro'yxatda bo'sh qator / noto'g'ri son chiqardi).
+// `alias` va `viewer` — kod ichidagi SQL bo'laklari, tashqi kiritma emas.
+function visibleTo(alias, viewer) {
+    return `${alias}.deleted_for_everyone = false
+               AND NOT EXISTS (
+                   SELECT 1 FROM message_deletions md
+                   WHERE md.message_id = ${alias}.id AND md.user_id = ${viewer}
+               )`;
 }
 
 // ---------- Bitta suhbat haqida qisqacha ma'lumot (ro'yxat elementi shakli) ----------
@@ -113,12 +138,13 @@ async function getConversationSummary(conversationId, viewerId) {
          JOIN users ou ON ou.id = op.user_id
          LEFT JOIN LATERAL (
              SELECT content, type, created_at, sender_id
-             FROM messages m WHERE m.conversation_id = c.id
+             FROM messages m WHERE m.conversation_id = c.id AND ${visibleTo('m', '$2')}
              ORDER BY m.created_at DESC LIMIT 1
          ) lm ON true
          LEFT JOIN LATERAL (
              SELECT COUNT(*) AS unread_count FROM messages m2
              WHERE m2.conversation_id = c.id AND m2.sender_id <> $2 AND m2.status <> 'read'
+               AND ${visibleTo('m2', '$2')}
          ) uc ON true
          WHERE c.id = $1`,
         [conversationId, viewerId]
@@ -145,12 +171,13 @@ async function listConversations(userId, { limit } = {}) {
          JOIN users ou ON ou.id = op.user_id
          LEFT JOIN LATERAL (
              SELECT content, type, created_at, sender_id
-             FROM messages m WHERE m.conversation_id = c.id
+             FROM messages m WHERE m.conversation_id = c.id AND ${visibleTo('m', 'cp.user_id')}
              ORDER BY m.created_at DESC LIMIT 1
          ) lm ON true
          LEFT JOIN LATERAL (
              SELECT COUNT(*) AS unread_count FROM messages m2
              WHERE m2.conversation_id = c.id AND m2.sender_id <> cp.user_id AND m2.status <> 'read'
+               AND ${visibleTo('m2', 'cp.user_id')}
          ) uc ON true
          WHERE cp.user_id = $1
          ORDER BY COALESCE(lm.created_at, c.created_at) DESC
@@ -257,15 +284,29 @@ async function deleteForMe(messageId, userId) {
 // ---------- "Hamma uchun o'chirish" ----------
 // Faqat yuboruvchi. Matn/media tozalanadi, deleted_for_everyone belgilanadi
 // — client bu bayroq bo'yicha "Xabar o'chirildi" placeholder ko'rsatadi.
+// Qaytadi: yangilangan xabar va — agar shu xabarning fayli endi hech qaysi
+// xabarda ishlatilmayotgan bo'lsa (forward qilingan nusxalar bir xil faylga
+// ishora qiladi) — diskdan o'chirilishi mumkin bo'lgan fayl yo'li.
 async function deleteForEveryone(messageId, userId) {
     const { rows } = await pool.query(
-        `UPDATE messages SET content = '', media_url = NULL, deleted_for_everyone = true
+        `WITH old AS (
+             SELECT media_url FROM messages WHERE id = $1 AND sender_id = $2
+         )
+         UPDATE messages
+         SET content = '', media_url = NULL, deleted_for_everyone = true, is_pinned = false
          WHERE id = $1 AND sender_id = $2
-         RETURNING id`,
+         RETURNING id, (SELECT media_url FROM old) AS old_media_url`,
         [messageId, userId]
     );
     if (!rows[0]) throw httpError('Xabarni o\'chirib bo\'lmaydi', 404);
-    return fetchMessageById(messageId);
+
+    let orphanedMediaUrl = null;
+    const oldUrl = rows[0].old_media_url;
+    if (oldUrl) {
+        const stillUsed = await pool.query('SELECT 1 FROM messages WHERE media_url = $1 LIMIT 1', [oldUrl]);
+        if (!stillUsed.rows[0]) orphanedMediaUrl = oldUrl;
+    }
+    return { message: await fetchMessageById(messageId), orphanedMediaUrl };
 }
 
 // ---------- Pin / Unpin ----------
@@ -332,7 +373,7 @@ async function getPinnedMessage(conversationId, userId) {
 // maqsad suhbatning ishtirokchisi bo'lishi shart).
 async function forwardMessage(messageId, targetConversationId, userId) {
     const src = await pool.query(
-        `SELECT m.content, m.media_url, m.type, u.username AS sender_username
+        `SELECT m.content, m.media_url, m.type, m.duration_ms, m.waveform, u.username AS sender_username
          FROM messages m
          JOIN conversation_participants cp ON cp.conversation_id = m.conversation_id AND cp.user_id = $2
          JOIN users u ON u.id = m.sender_id
@@ -345,10 +386,16 @@ async function forwardMessage(messageId, targetConversationId, userId) {
     }
     const source = src.rows[0];
     const { rows } = await pool.query(
-        `INSERT INTO messages (conversation_id, sender_id, content, media_url, type, status, is_forwarded, forwarded_from_username)
-         VALUES ($1, $2, $3, $4, $5, 'sent', true, $6)
+        // duration_ms/waveform — ovozli xabarda davomiylik va to'lqin shakli;
+        // ularsiz forward qilingan ovozli xabar "00:00" bo'lib ko'rinardi.
+        `INSERT INTO messages (conversation_id, sender_id, content, media_url, type, status,
+                               is_forwarded, forwarded_from_username, duration_ms, waveform)
+         VALUES ($1, $2, $3, $4, $5, 'sent', true, $6, $7, $8)
          RETURNING id`,
-        [targetConversationId, userId, source.content, source.media_url, source.type, source.sender_username]
+        [
+            targetConversationId, userId, source.content, source.media_url, source.type,
+            source.sender_username, source.duration_ms, source.waveform,
+        ]
     );
     return fetchMessageById(rows[0].id);
 }

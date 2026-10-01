@@ -7,7 +7,7 @@ const usersService = require('./../services/users.service');
 // ishlatiladi — signalizatsiya xuddi oddiy qo'ng'iroqdagidek `call:signal`
 // orqali boradi, faqat "kim kimga qo'ng'iroq qildi" bosqichi yo'q.
 
-// { userId, video }
+// { userId, video, excludeUserId }
 const queue = [];
 
 function removeFromQueue(userId) {
@@ -23,15 +23,25 @@ function toPeerInfo(user) {
 function registerRandomChatHandlers(io, socket) {
     const userId = socket.userId;
 
-    socket.on('random:join-queue', async ({ video } = {}, ack) => {
+    // excludeUserId — foydalanuvchi hozirgina ajralgan ("Keyingisi" bosilgan)
+    // sherik. Usiz ikkalasi ham navbatga qaytgach, darhol yana bir-biriga
+    // tushib qolardi.
+    socket.on('random:join-queue', async ({ video, excludeUserId } = {}, ack) => {
         try {
             const isVideo = !!video;
+            const exclude = typeof excludeUserId === 'string' ? excludeUserId : null;
             if (queue.some((q) => q.userId === userId)) {
                 return ack?.({ ok: true, queued: true });
             }
-            const matchIndex = queue.findIndex((q) => q.video === isVideo && q.userId !== userId);
+            const matchIndex = queue.findIndex(
+                (q) =>
+                    q.video === isVideo &&
+                    q.userId !== userId &&
+                    q.userId !== exclude &&
+                    q.excludeUserId !== userId
+            );
             if (matchIndex === -1) {
-                queue.push({ userId, video: isVideo });
+                queue.push({ userId, video: isVideo, excludeUserId: exclude });
                 return ack?.({ ok: true, queued: true });
             }
             const [partner] = queue.splice(matchIndex, 1);
@@ -64,7 +74,7 @@ function registerRandomChatHandlers(io, socket) {
             });
         } catch (err) {
             console.error('[random] join-queue error:', err);
-            ack?.({ error: err.message });
+            ack?.({ error: 'Server xatosi' });
         }
     });
 

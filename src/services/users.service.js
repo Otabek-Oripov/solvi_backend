@@ -69,11 +69,16 @@ async function getProfile(userId, viewerId) {
     );
     if (!rows[0]) throw httpError('Foydalanuvchi topilmadi', 404);
 
+    const user = rows[0];
+    // Email — shaxsiy ma'lumot: faqat egasining o'ziga qaytariladi. viewerId
+    // berilmagan holat (updateProfile va /users/me) — o'z profili.
+    if (viewerId && viewerId !== userId) delete user.email;
+
     const photos = await pool.query(
         'SELECT id, url, position FROM user_photos WHERE user_id = $1 ORDER BY position ASC',
         [userId]
     );
-    return attachExtras({ ...rows[0], photos: photos.rows }, viewerId);
+    return attachExtras({ ...user, photos: photos.rows }, viewerId);
 }
 
 // ---------- O'z profilini tahrirlash ----------
@@ -195,6 +200,7 @@ async function deletePhoto(userId, photoId) {
             userId,
         ]);
     }
+    return deleted.rows[0];
 }
 
 async function reorderPhotos(userId, orderedIds) {
@@ -257,20 +263,24 @@ async function unfollowUser(followerId, targetId) {
 const LIST_USER_FIELDS = 'u.id, u.username, u.full_name, u.avatar_url, u.status';
 
 // ---------- Barcha foydalanuvchilar (qidiruv bilan) ----------
-async function listUsers({ search, limit, cursor, viewerId }) {
+// Tartib "avval kuzatilayotganlar" (is_following DESC) bo'lgani uchun bu
+// yerda created_at bo'yicha cursor ishlamaydi (kuzatilayotganlar keyingi
+// sahifada qayta chiqib, qolganlar tushib qolardi) — offset ishlatiladi.
+// Emaili tasdiqlanmagan (ro'yxatdan o'tishni yakunlamagan) hisoblar
+// ro'yxatga chiqmaydi.
+async function listUsers({ search, limit, offset, viewerId }) {
     const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 30, 1), 60);
+    const safeOffset = Math.max(parseInt(offset, 10) || 0, 0);
     const params = [viewerId];
-    let where = 'WHERE u.id <> $1 AND u.is_active = true';
+    let where = 'WHERE u.id <> $1 AND u.is_active = true AND u.is_verified = true';
 
     if (search) {
-        params.push(`%${search}%`);
+        // % va _ — ILIKE'ning maxsus belgilari; foydalanuvchi yozgan matn
+        // aynan o'zi sifatida qidirilishi uchun ekranlanadi.
+        params.push(`%${String(search).replace(/[\\%_]/g, '\\$&')}%`);
         where += ` AND (u.username ILIKE $${params.length} OR u.full_name ILIKE $${params.length})`;
     }
-    if (cursor) {
-        params.push(cursor);
-        where += ` AND u.created_at < $${params.length}`;
-    }
-    params.push(safeLimit);
+    params.push(safeLimit, safeOffset);
 
     const { rows } = await pool.query(
         `SELECT ${LIST_USER_FIELDS}, u.created_at,
@@ -279,8 +289,8 @@ async function listUsers({ search, limit, cursor, viewerId }) {
                 ) AS is_following
          FROM users u
          ${where}
-         ORDER BY is_following DESC, u.created_at DESC
-         LIMIT $${params.length}`,
+         ORDER BY is_following DESC, u.created_at DESC, u.id
+         LIMIT $${params.length - 1} OFFSET $${params.length}`,
         params
     );
     return rows;

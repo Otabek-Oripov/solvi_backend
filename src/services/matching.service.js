@@ -66,7 +66,7 @@ function buildFilterClause(filters, params) {
     }
 
     if (filters.locationCity) {
-        params.push(`%${filters.locationCity}%`);
+        params.push(`%${String(filters.locationCity).replace(/[\\%_]/g, '\\$&')}%`);
         clause += ` AND u.location_city ILIKE $${params.length}`;
     }
 
@@ -105,6 +105,7 @@ async function getCandidates(userId, { limit, filters = {} } = {}) {
          FROM users u
          WHERE u.id <> $1
            AND u.is_active = true
+           AND u.is_verified = true
            AND NOT EXISTS (SELECT 1 FROM swipes s WHERE s.swiper_id = $1 AND s.target_id = u.id)
            ${filterClause}
          ORDER BY u.created_at DESC
@@ -129,8 +130,11 @@ async function getCandidates(userId, { limit, filters = {} } = {}) {
 // ---------- Swipe qilish (like/pass) ----------
 // Ikki tomon ham bir-birini "like" qilgan bo'lsa — match yaratiladi va
 // ular orasida (mavjud bo'lmasa) suhbat ochiladi.
-async function swipe(userId, targetId, action) {
-    if (!targetId) throw httpError('targetId kerak', 400);
+async function swipe(userId, rawTargetId, action) {
+    if (!rawTargetId) throw httpError('targetId kerak', 400);
+    // UUID katta harf bilan kelsa ham bazadagi (kichik harfli) shaklga
+    // keltiramiz — pastdagi user_a < user_b taqqoslashi shunga tayanadi.
+    const targetId = String(rawTargetId).toLowerCase();
     if (userId === targetId) throw httpError('O\'zingizni swipe qila olmaysiz', 400);
     if (!['like', 'pass'].includes(action)) throw httpError('action \'like\' yoki \'pass\' bo\'lishi kerak', 400);
 
@@ -155,23 +159,22 @@ async function swipe(userId, targetId, action) {
     const userAId = userId < targetId ? userId : targetId;
     const userBId = userId < targetId ? targetId : userId;
 
-    const existing = await pool.query(
+    // Ikki tomon bir-birini deyarli bir vaqtda "like" qilsa, ikkala so'rov ham
+    // shu yergacha yetib keladi. Suhbat ham, match ham "bor bo'lsa o'shani
+    // ol" tarzida yaratiladi (UNIQUE cheklovlar + ON CONFLICT) — ikkinchi
+    // so'rov xatoga uchramaydi, shunchaki mavjud match'ni qaytaradi.
+    const conversation = await getOrCreateDirectConversation(userId, targetId);
+    await pool.query(
+        `INSERT INTO matches (user_a_id, user_b_id, conversation_id)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (user_a_id, user_b_id) DO NOTHING`,
+        [userAId, userBId, conversation.conversation_id]
+    );
+    const { rows: matchRows } = await pool.query(
         'SELECT id, conversation_id FROM matches WHERE user_a_id = $1 AND user_b_id = $2',
         [userAId, userBId]
     );
-
-    let matchRow;
-    if (existing.rows[0]) {
-        matchRow = existing.rows[0];
-    } else {
-        const conversation = await getOrCreateDirectConversation(userId, targetId);
-        const { rows } = await pool.query(
-            `INSERT INTO matches (user_a_id, user_b_id, conversation_id)
-             VALUES ($1, $2, $3) RETURNING id, conversation_id`,
-            [userAId, userBId, conversation.conversation_id]
-        );
-        matchRow = rows[0];
-    }
+    const matchRow = matchRows[0];
 
     const otherUser = await pool.query(
         'SELECT id, username, full_name, avatar_url FROM users WHERE id = $1',
@@ -218,4 +221,35 @@ async function getLikedUsers(userId) {
     return rows;
 }
 
-module.exports = { getCandidates, swipe, getMatches, getLikedUsers };
+// ---------- "Liked You" — meni like qilgan, lekin men hali javob
+// bermagan (like/pass qilmagan) foydalanuvchilar ----------
+// Swipe kartasi bilan bir xil to'liq profil ma'lumoti bilan qaytariladi —
+// shu yerdan ham to'g'ridan-to'g'ri like/pass qilish mumkin.
+async function getLikedByUsers(userId) {
+    const { rows } = await pool.query(
+        `SELECT ${CANDIDATE_FIELDS}
+         FROM swipes s
+         JOIN users u ON u.id = s.swiper_id
+         WHERE s.target_id = $1
+           AND s.action = 'like'
+           AND u.is_active = true
+           AND NOT EXISTS (SELECT 1 FROM swipes s2 WHERE s2.swiper_id = $1 AND s2.target_id = u.id)
+         ORDER BY s.created_at DESC`,
+        [userId]
+    );
+    if (rows.length === 0) return rows;
+
+    const ids = rows.map((r) => r.id);
+    const photos = await pool.query(
+        'SELECT user_id, url FROM user_photos WHERE user_id = ANY($1::uuid[]) ORDER BY position ASC',
+        [ids]
+    );
+    const photosByUser = new Map();
+    for (const p of photos.rows) {
+        if (!photosByUser.has(p.user_id)) photosByUser.set(p.user_id, []);
+        photosByUser.get(p.user_id).push(p.url);
+    }
+    return rows.map((r) => ({ ...r, photos: photosByUser.get(r.id) || [] }));
+}
+
+module.exports = { getCandidates, swipe, getMatches, getLikedUsers, getLikedByUsers };

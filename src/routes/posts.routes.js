@@ -2,7 +2,7 @@ const express = require('express');
 const { body, param, query, validationResult } = require('express-validator');
 const controller = require('../controllers/posts.controller');
 const { requireAuth } = require('../middlewares/auth.middleware');
-const { uploadPost } = require('../middlewares/upload.middleware');
+const { uploadPost, cleanupUploadsOnError } = require('../middlewares/upload.middleware');
 
 const router = express.Router();
 
@@ -20,6 +20,7 @@ function validate(req, res, next) {
 router.post(
     '/',
     requireAuth,
+    cleanupUploadsOnError,
     uploadPost,
     [
         body('caption').optional({ nullable: true }).isLength({ max: 500 }).withMessage('Caption 500 belgidan oshmasin'),

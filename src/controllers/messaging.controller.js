@@ -1,11 +1,7 @@
 const messagingService = require('../services/messaging.service');
 const { emitToParticipants } = require('../realtime/socket');
-
-function handleError(res, err) {
-    const status = err.status || 500;
-    if (status === 500) console.error(err);
-    res.status(status).json({ error: err.message || 'Server xatosi' });
-}
+const { handleError } = require('../utils/http');
+const { publicPath, removeUploadedFile } = require('../middlewares/upload.middleware');
 
 // GET /conversations — foydalanuvchining barcha suhbatlari
 async function listConversations(req, res) {
@@ -51,16 +47,12 @@ async function listMessages(req, res) {
 // GIF (masalan Giphy) uchun esa fayl yuklanmaydi — JSON body'da tayyor
 // mediaUrl + type:'gif' keladi. Yuborilgan xabar boshqa ishtirokchiga
 // socket orqali darhol yetkaziladi.
-function toUrl(req, filename) {
-    return `${req.protocol}://${req.get('host')}/uploads/${filename}`;
-}
-
 async function sendMessage(req, res) {
     try {
         const file = req.file;
         let mediaUrl, type;
         if (file) {
-            mediaUrl = toUrl(req, file.filename);
+            mediaUrl = publicPath(file.filename);
             if (file.mimetype.startsWith('video/')) type = 'video';
             else if (file.mimetype.startsWith('audio/')) type = 'voice';
             else type = 'image';
@@ -110,7 +102,11 @@ async function editMessage(req, res) {
 async function deleteMessage(req, res) {
     try {
         if (req.query.forEveryone === 'true') {
-            const message = await messagingService.deleteForEveryone(req.params.messageId, req.userId);
+            const { message, orphanedMediaUrl } = await messagingService.deleteForEveryone(
+                req.params.messageId,
+                req.userId
+            );
+            removeUploadedFile(orphanedMediaUrl);
             const io = req.app.get('io');
             if (io) await emitToParticipants(io, message.conversation_id, 'message:deleted', message);
             return res.json({ message });

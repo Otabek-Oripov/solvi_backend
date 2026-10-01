@@ -2,7 +2,7 @@ const express = require('express');
 const { body, param, query, validationResult } = require('express-validator');
 const controller = require('../controllers/users.controller');
 const { requireAuth } = require('../middlewares/auth.middleware');
-const { uploadPhoto } = require('../middlewares/upload.middleware');
+const { uploadPhoto, cleanupUploadsOnError } = require('../middlewares/upload.middleware');
 
 const router = express.Router();
 
@@ -21,7 +21,10 @@ function validate(req, res, next) {
 router.get(
     '/',
     requireAuth,
-    [query('search').optional({ nullable: true }).isLength({ max: 100 })],
+    [
+        query('search').optional({ nullable: true }).isLength({ max: 100 }),
+        query('offset').optional().isInt({ min: 0, max: 100000 }).withMessage('offset noto\'g\'ri'),
+    ],
     validate,
     controller.listUsers
 );
@@ -69,6 +72,7 @@ router.get('/me/photos', requireAuth, controller.listPhotos);
 router.post(
     '/me/photos',
     requireAuth,
+    cleanupUploadsOnError,
     uploadPhoto.single('photo'),
     controller.uploadPhoto
 );

@@ -3,5 +3,6 @@
 -- (mijoz tomonidan yozib olish paytida hisoblanadi, vergul bilan
 -- ajratilgan sonlar sifatida saqlanadi va qayta ijro etishda bir xil
 -- ko'rinishni chizish uchun ishlatiladi).
-ALTER TABLE messages ADD COLUMN duration_ms INTEGER;
-ALTER TABLE messages ADD COLUMN waveform TEXT;
+-- Qayta-qayta ishga tushirish xavfsiz.
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS duration_ms INTEGER;
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS waveform TEXT;

@@ -1,10 +1,11 @@
 -- =====================================================================
 -- Solvi — auth moduli uchun schema (Otabekning original dizayni asosida)
--- Ishga tushirish:  psql -U postgres -d Solvi_base -f src/database/schema.sql
+-- Ishga tushirish:  npm run db:migrate   (bo'sh bazaga shu faylni o'rnatadi,
+--                   mavjud bazaga esa yangi migratsiyalarni qo'llaydi)
 --             yoki: pgAdmin -> File -> Open -> shu fayl -> Run (F5)
 --
--- Noldan o'rnatish uchun. Mavjud bazani moslashtirish uchun:
--- src/database/migrations/001_reconcile_users_schema.sql
+-- Bu fayl har doim JORIY to'liq sxemani aks ettiradi: yangi migratsiya
+-- (src/database/migrations/) qo'shilganda shu fayl ham yangilanadi.
 -- =====================================================================
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto"; -- gen_random_uuid()
@@ -85,6 +86,7 @@ CREATE TABLE IF NOT EXISTS otp_codes (
     purpose         VARCHAR(30) NOT NULL,    -- 'register' | 'login' | 'reset_password'
     expires_at      TIMESTAMPTZ NOT NULL,
     used            BOOLEAN DEFAULT FALSE,
+    attempts        SMALLINT NOT NULL DEFAULT 0,  -- noto'g'ri urinishlar (max 5)
     created_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -154,9 +156,13 @@ CREATE TABLE IF NOT EXISTS comments (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- direct_key — 1:1 suhbatda "<kichik user id>:<katta user id>". UNIQUE
+-- bo'lgani uchun bir juftlik orasida faqat bitta suhbat bo'la oladi
+-- (guruh suhbatlarida NULL).
 CREATE TABLE IF NOT EXISTS conversations (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     is_group   BOOLEAN NOT NULL DEFAULT false,
+    direct_key TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -260,3 +266,41 @@ CREATE INDEX IF NOT EXISTS idx_swipes_swiper ON swipes(swiper_id);
 CREATE INDEX IF NOT EXISTS idx_swipes_target ON swipes(target_id);
 CREATE INDEX IF NOT EXISTS idx_matches_user_a ON matches(user_a_id);
 CREATE INDEX IF NOT EXISTS idx_matches_user_b ON matches(user_b_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_conversations_direct_key ON conversations(direct_key);
+
+-- ---------------------------------------------------------- Triggerlar
+
+-- users.updated_at — har yangilanishda avtomatik
+CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_users_updated_at ON users;
+CREATE TRIGGER trg_users_updated_at
+    BEFORE UPDATE ON users
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- Ishtirokchi o'chirilganda (masalan user o'chirilishi bilan CASCADE orqali)
+-- 1:1 suhbatning o'zi ham o'chiriladi — aks holda u ishtirokchisiz, hech
+-- kim ko'rmaydigan holda qolib ketardi.
+CREATE OR REPLACE FUNCTION delete_orphaned_conversation() RETURNS trigger AS $$
+BEGIN
+    DELETE FROM conversations c
+    WHERE c.id = OLD.conversation_id
+      AND (
+          c.is_group = false
+          OR NOT EXISTS (
+              SELECT 1 FROM conversation_participants p WHERE p.conversation_id = c.id
+          )
+      );
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_conversation_participant_removed ON conversation_participants;
+CREATE TRIGGER trg_conversation_participant_removed
+    AFTER DELETE ON conversation_participants
+    FOR EACH ROW EXECUTE FUNCTION delete_orphaned_conversation();

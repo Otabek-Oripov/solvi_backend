@@ -1,10 +1,6 @@
 const usersService = require('../services/users.service');
-
-function handleError(res, err) {
-    const status = err.status || 500;
-    if (status === 500) console.error(err);
-    res.status(status).json({ error: err.message || 'Server xatosi' });
-}
+const { handleError } = require('../utils/http');
+const { publicPath, removeUploadedFile } = require('../middlewares/upload.middleware');
 
 // GET /users/me — o'z profili
 async function getMe(req, res) {
@@ -52,7 +48,7 @@ async function listUsers(req, res) {
         const users = await usersService.listUsers({
             search: req.query.search,
             limit: req.query.limit,
-            cursor: req.query.cursor,
+            offset: req.query.offset,
             viewerId: req.userId,
         });
         res.json({ users });
@@ -104,9 +100,7 @@ async function uploadPhoto(req, res) {
     try {
         if (!req.file) throw Object.assign(new Error('Fayl topilmadi'), { status: 400 });
 
-        // Diskdagi faylni ochiq URL'ga aylantiramiz (statik serving orqali)
-        const url = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
-        const photo = await usersService.addPhoto(req.userId, url);
+        const photo = await usersService.addPhoto(req.userId, publicPath(req.file.filename));
         res.status(201).json({ photo });
     } catch (err) {
         handleError(res, err);
@@ -124,7 +118,8 @@ async function listPhotos(req, res) {
 
 async function deletePhoto(req, res) {
     try {
-        await usersService.deletePhoto(req.userId, req.params.photoId);
+        const deleted = await usersService.deletePhoto(req.userId, req.params.photoId);
+        removeUploadedFile(deleted.url);
         res.json({ success: true });
     } catch (err) {
         handleError(res, err);

@@ -1,17 +1,9 @@
 const postsService = require('../services/posts.service');
-
-function handleError(res, err) {
-    const status = err.status || 500;
-    if (status === 500) console.error(err);
-    res.status(status).json({ error: err.message || 'Server xatosi' });
-}
+const { handleError } = require('../utils/http');
+const { publicPath } = require('../middlewares/upload.middleware');
 
 // POST /posts — yangi video yoki rasm(lar) (carousel) yuklash.
 // Yoki "video" (+ ixtiyoriy "thumbnail"), yoki "photos" (1-10 ta) kelishi kerak.
-function toUrl(req, filename) {
-    return `${req.protocol}://${req.get('host')}/uploads/${filename}`;
-}
-
 async function create(req, res) {
     try {
         const videoFile = req.files?.video?.[0];
@@ -22,15 +14,15 @@ async function create(req, res) {
         if (videoFile) {
             mediaItems = [
                 {
-                    mediaUrl: toUrl(req, videoFile.filename),
+                    mediaUrl: publicPath(videoFile.filename),
                     mediaType: 'video',
-                    thumbnailUrl: thumbFile ? toUrl(req, thumbFile.filename) : null,
+                    thumbnailUrl: thumbFile ? publicPath(thumbFile.filename) : null,
                     duration: req.body.duration ? parseInt(req.body.duration, 10) : null,
                 },
             ];
         } else if (photoFiles.length > 0) {
             mediaItems = photoFiles.map((file) => ({
-                mediaUrl: toUrl(req, file.filename),
+                mediaUrl: publicPath(file.filename),
                 mediaType: 'photo',
             }));
         } else {

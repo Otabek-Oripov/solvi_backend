@@ -64,10 +64,11 @@ async function createPost(userId, { mediaItems, caption }) {
 async function getFeed({ limit, cursor, viewerId } = {}) {
     const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 30);
     const params = [viewerId || null];
-    let where = '';
+    // Bloklangan (is_active = false) foydalanuvchining postlari lentaga chiqmaydi
+    let where = 'WHERE u.is_active = true';
     if (cursor) {
         params.push(cursor);
-        where = `WHERE p.created_at < $${params.length}`;
+        where += ` AND p.created_at < $${params.length}`;
     }
     params.push(safeLimit);
 
@@ -219,8 +220,11 @@ async function addComment(userId, postId, content) {
             'UPDATE posts SET comments_count = comments_count + 1 WHERE id = $1',
             [postId]
         );
+        // Ro'yxatdagi (listComments) bilan bir xil shakl: muallifning ismi va
+        // rasmi ham qaytadi — aks holda yangi izoh ilovada ismsiz ko'rinardi.
+        const author = await client.query('SELECT username, avatar_url FROM users WHERE id = $1', [userId]);
         await client.query('COMMIT');
-        return rows[0];
+        return { ...rows[0], ...author.rows[0] };
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
         throw err;
