@@ -1,10 +1,11 @@
 const pool = require('../config/db');
+const { buildFilterClause } = require('./matching.service');
 
 // Flutter'ga qaytariladigan xavfsiz ustunlar (password_hash hech qachon emas).
 const PUBLIC_USER_FIELDS = `
     id, email, username, full_name, avatar_url, bio, birth_date, gender,
     is_verified, status, created_at,
-    goal, work, school, location_country, location_city,
+    goal, work, school, location_country, location_city, latitude, longitude,
     height_cm, weight_kg, star_sign, exercise,
     education_level, marital_status, has_kids, drinking, smoking,
     pets, religion, core_values, interests, languages_known
@@ -371,11 +372,56 @@ async function getPublicSummary(userId) {
     return rows[0] || null;
 }
 
+// ---------- "Show my location" — GPS koordinatasini saqlash ----------
+async function updateLocation(userId, latitude, longitude) {
+    const lat = Number(latitude);
+    const lng = Number(longitude);
+    if (!Number.isFinite(lat) || lat < -90 || lat > 90) {
+        throw httpError('latitude noto\'g\'ri', 400);
+    }
+    if (!Number.isFinite(lng) || lng < -180 || lng > 180) {
+        throw httpError('longitude noto\'g\'ri', 400);
+    }
+    const { rows } = await pool.query(
+        'UPDATE users SET latitude = $1, longitude = $2, updated_at = NOW() WHERE id = $3 RETURNING id, latitude, longitude',
+        [lat, lng, userId]
+    );
+    if (!rows[0]) throw httpError('Foydalanuvchi topilmadi', 404);
+    return rows[0];
+}
+
+// ---------- Xarita uchun — joylashuvini ulashgan boshqa foydalanuvchilar ----------
+// O'zi va joylashuvini hali ulashmaganlar (latitude/longitude NULL)
+// chiqarib tashlanadi. `filters` — Match'dagi bilan bir xil "Search filters"
+// (gender/yosh/qiziqish va h.k.), xaritada ham shu bo'yicha ko'rsatish uchun.
+async function listNearbyUsers(viewerId, { limit, filters = {} } = {}) {
+    const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 300);
+    const params = [viewerId];
+    const filterClause = buildFilterClause(filters, params);
+    params.push(safeLimit);
+
+    const { rows } = await pool.query(
+        `SELECT u.id, u.username, u.avatar_url, u.latitude, u.longitude
+         FROM users u
+         WHERE u.id <> $1
+           AND u.is_active = true
+           AND u.latitude IS NOT NULL
+           AND u.longitude IS NOT NULL
+           ${filterClause}
+         ORDER BY u.updated_at DESC
+         LIMIT $${params.length}`,
+        params
+    );
+    return rows;
+}
+
 module.exports = {
     getProfile,
     getPublicSummary,
     userExists,
     updateProfile,
+    updateLocation,
+    listNearbyUsers,
     listPhotos,
     addPhoto,
     deletePhoto,

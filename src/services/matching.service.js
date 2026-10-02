@@ -127,6 +127,29 @@ async function getCandidates(userId, { limit, filters = {} } = {}) {
     return rows.map((r) => ({ ...r, photos: photosByUser.get(r.id) || [] }));
 }
 
+// ---------- Bitta foydalanuvchini Bumpy kartasi shaklida olish ----------
+// Xaritadagi avatarga bosilganda — swipe navbatida bo'lmasa ham (hali
+// swipe qilinmagan yoki qilingan bo'lishidan qat'iy nazar) shu orqali
+// to'g'ridan-to'g'ri like/pass qilish mumkin bo'lishi uchun.
+async function getCandidateById(viewerId, targetId) {
+    if (viewerId === targetId) throw httpError('O\'zingizni ko\'ra olmaysiz', 400);
+    const { rows } = await pool.query(
+        `SELECT ${CANDIDATE_FIELDS}
+         FROM users u
+         WHERE u.id = $1 AND u.is_active = true`,
+        [targetId]
+    );
+    const candidate = rows[0];
+    if (!candidate) throw httpError('Foydalanuvchi topilmadi', 404);
+
+    const photos = await pool.query(
+        'SELECT url FROM user_photos WHERE user_id = $1 ORDER BY position ASC',
+        [targetId]
+    );
+    candidate.photos = photos.rows.map((p) => p.url);
+    return candidate;
+}
+
 // ---------- Swipe qilish (like/pass) ----------
 // Ikki tomon ham bir-birini "like" qilgan bo'lsa — match yaratiladi va
 // ular orasida (mavjud bo'lmasa) suhbat ochiladi.
@@ -252,4 +275,12 @@ async function getLikedByUsers(userId) {
     return rows.map((r) => ({ ...r, photos: photosByUser.get(r.id) || [] }));
 }
 
-module.exports = { getCandidates, swipe, getMatches, getLikedUsers, getLikedByUsers };
+module.exports = {
+    getCandidates,
+    getCandidateById,
+    swipe,
+    getMatches,
+    getLikedUsers,
+    getLikedByUsers,
+    buildFilterClause,
+};

@@ -1,5 +1,5 @@
 const express = require('express');
-const { body, query, validationResult } = require('express-validator');
+const { body, param, query, validationResult } = require('express-validator');
 const controller = require('../controllers/matching.controller');
 const { requireAuth } = require('../middlewares/auth.middleware');
 
@@ -19,6 +19,14 @@ router.get(
     [query('limit').optional().isInt({ min: 1, max: 50 })],
     validate,
     controller.getCandidates
+);
+
+router.get(
+    '/candidates/:id',
+    requireAuth,
+    [param('id').isUUID().withMessage('ID noto\'g\'ri')],
+    validate,
+    controller.getCandidateById
 );
 
 router.post(

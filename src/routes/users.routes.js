@@ -67,6 +67,27 @@ router.patch(
     controller.updateMe
 );
 
+router.patch(
+    '/me/location',
+    requireAuth,
+    [
+        body('latitude').isFloat({ min: -90, max: 90 }).withMessage('latitude noto\'g\'ri'),
+        body('longitude').isFloat({ min: -180, max: 180 }).withMessage('longitude noto\'g\'ri'),
+    ],
+    validate,
+    controller.updateLocation
+);
+
+// Diqqat: `/nearby` — `/:id` dan OLDIN bo'lishi shart, aks holda "nearby"
+// UUID parametr sifatida talqin qilinib, 400 xato qaytaradi.
+router.get(
+    '/nearby',
+    requireAuth,
+    [query('limit').optional().isInt({ min: 1, max: 300 })],
+    validate,
+    controller.listNearby
+);
+
 router.get('/me/photos', requireAuth, controller.listPhotos);
 
 router.post(

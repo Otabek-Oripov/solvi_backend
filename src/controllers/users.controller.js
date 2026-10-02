@@ -1,5 +1,6 @@
 const usersService = require('../services/users.service');
 const { handleError } = require('../utils/http');
+const { parseMatchFilters } = require('../utils/filters');
 const { publicPath, removeUploadedFile } = require('../middlewares/upload.middleware');
 
 // GET /users/me — o'z profili
@@ -135,10 +136,36 @@ async function reorderPhotos(req, res) {
     }
 }
 
+// PATCH /users/me/location — "Show my location" bosilganda GPS koordinatasi
+async function updateLocation(req, res) {
+    try {
+        const { latitude, longitude } = req.body;
+        const user = await usersService.updateLocation(req.userId, latitude, longitude);
+        res.json({ user });
+    } catch (err) {
+        handleError(res, err);
+    }
+}
+
+// GET /users/nearby — xarita uchun joylashuvini ulashgan foydalanuvchilar
+// (Match'dagi bilan bir xil "Search filters" so'rov parametrlari bilan)
+async function listNearby(req, res) {
+    try {
+        const q = req.query;
+        const filters = parseMatchFilters(q);
+        const users = await usersService.listNearbyUsers(req.userId, { limit: q.limit, filters });
+        res.json({ users });
+    } catch (err) {
+        handleError(res, err);
+    }
+}
+
 module.exports = {
     getMe,
     getById,
     updateMe,
+    updateLocation,
+    listNearby,
     uploadPhoto,
     listPhotos,
     deletePhoto,
