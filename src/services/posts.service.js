@@ -207,17 +207,15 @@ async function getSavedPosts({ viewerId, limit, cursor } = {}) {
 }
 
 // ---------- Repost qilish / bekor qilish ----------
-// Idempotent (izoh laykidagi kabi). O'z postini repost qilib bo'lmaydi.
+// Idempotent (izoh laykidagi kabi). Har qanday postni, jumladan o'zinikini
+// ham repost qilish mumkin.
 async function setRepost(userId, postId, reposted) {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
 
-        const post = await client.query('SELECT user_id FROM posts WHERE id = $1 FOR UPDATE', [postId]);
+        const post = await client.query('SELECT 1 FROM posts WHERE id = $1 FOR UPDATE', [postId]);
         if (!post.rows[0]) throw httpError('Post topilmadi', 404);
-        if (reposted && post.rows[0].user_id === userId) {
-            throw httpError('O\'z postingizni repost qilib bo\'lmaydi', 400);
-        }
 
         const changed = reposted
             ? await client.query(
