@@ -94,6 +94,28 @@ const uploadChatMedia = multer({
     limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB — video uchun
 }).single('media');
 
+function storyFileFilter(req, file, cb) {
+    if (file.fieldname === 'media') {
+        if (!IMAGE_TYPES[file.mimetype] && !VIDEO_TYPES[file.mimetype]) {
+            return cb(Object.assign(new Error('Story uchun faqat rasm yoki video yuklash mumkin'), { status: 400 }));
+        }
+    } else if (!IMAGE_TYPES[file.mimetype]) {
+        return cb(Object.assign(new Error('Muqova JPEG, PNG yoki WEBP bo\'lishi kerak'), { status: 400 }));
+    }
+    cb(null, true);
+}
+
+// Story: bitta rasm yoki video ("media") + videoning ixtiyoriy muqovasi
+// ("thumbnail" — chatdagi story javobi kartochkasi uchun).
+const uploadStory = multer({
+    storage,
+    fileFilter: storyFileFilter,
+    limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB — video uchun
+}).fields([
+    { name: 'media', maxCount: 1 },
+    { name: 'thumbnail', maxCount: 1 },
+]);
+
 // Bazaga to'liq URL emas, shu NISBIY yo'l yoziladi. Host (IP/domen)
 // o'zgarganda eski yozuvlar buzilmaydi — klient o'zining base URL'ini
 // oldiga qo'shib oladi.
@@ -129,6 +151,7 @@ module.exports = {
     uploadPhoto,
     uploadPost,
     uploadChatMedia,
+    uploadStory,
     publicPath,
     cleanupUploadsOnError,
     removeUploadedFile,

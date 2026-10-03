@@ -7,6 +7,7 @@ const usersRoutes = require('./routes/users.routes');
 const postsRoutes = require('./routes/posts.routes');
 const messagingRoutes = require('./routes/messaging.routes');
 const matchingRoutes = require('./routes/matching.routes');
+const storiesRoutes = require('./routes/stories.routes');
 const { UPLOAD_DIR } = require('./middlewares/upload.middleware');
 const { handleError } = require('./utils/http');
 
@@ -83,6 +84,7 @@ app.use('/users', apiLimiter, usersRoutes);
 app.use('/posts', apiLimiter, postsRoutes);
 app.use('/conversations', apiLimiter, messagingRoutes);
 app.use('/matching', apiLimiter, matchingRoutes);
+app.use('/stories', apiLimiter, storiesRoutes);
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 

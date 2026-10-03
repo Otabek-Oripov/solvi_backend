@@ -1,6 +1,10 @@
 const pool = require('../config/db');
+const { purgeExpiredStories } = require('./stories.service');
+const { removeUploadedFile } = require('../middlewares/upload.middleware');
 
-const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1 soat
+// Story'lar 24 soatda o'chadi — ko'rsatish so'rovlari muddatni o'zi
+// tekshiradi, bu yerda faqat bazadan/diskdan tozalanadi.
+const CLEANUP_INTERVAL_MS = 15 * 60 * 1000; // 15 daqiqa
 
 // "online" holati faqat xotiradagi socket ulanishlariga asoslanadi. Server
 // kutilmaganda to'xtasa (crash, kill), disconnect hodisasi ishlamaydi va
@@ -30,6 +34,10 @@ async function purgeExpiredRows() {
     if (tokens.rowCount || otps.rowCount) {
         console.log(`Tozalash: ${tokens.rowCount} ta refresh token, ${otps.rowCount} ta OTP kodi o'chirildi`);
     }
+
+    // 24 soati o'tgan story'lar (va faqat ular uchun yuklangan fayllar).
+    const storyFiles = await purgeExpiredStories();
+    storyFiles.forEach(removeUploadedFile);
 }
 
 function startMaintenance() {

@@ -191,6 +191,33 @@ CREATE TABLE IF NOT EXISTS comment_likes (
     PRIMARY KEY (comment_id, user_id)
 );
 
+-- Story'lar (Instagram uslubida, 24 soat yashaydi). source_post_id — story
+-- postdan yaratilgan bo'lsa; owns_media — fayl shu story uchun yuklangan
+-- (o'chirilganda fayl ham o'chadi). overlays — ustidagi matn/emoji'lar.
+CREATE TABLE IF NOT EXISTS stories (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    media_url      TEXT NOT NULL,
+    media_type     VARCHAR(10) NOT NULL CHECK (media_type IN ('photo', 'video')),
+    thumbnail_url  TEXT,
+    duration_ms    INTEGER,
+    source_post_id UUID REFERENCES posts(id) ON DELETE SET NULL,
+    owns_media     BOOLEAN NOT NULL DEFAULT false,
+    overlays       JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at     TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '24 hours'
+);
+
+-- Story'ni kim ko'rgani va layk bosgani
+CREATE TABLE IF NOT EXISTS story_views (
+    story_id  UUID NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    viewer_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    liked     BOOLEAN NOT NULL DEFAULT false,
+    viewed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (story_id, viewer_id)
+);
+
 -- direct_key — 1:1 suhbatda "<kichik user id>:<katta user id>". UNIQUE
 -- bo'lgani uchun bir juftlik orasida faqat bitta suhbat bo'la oladi
 -- (guruh suhbatlarida NULL).
@@ -229,6 +256,8 @@ CREATE TABLE IF NOT EXISTS messages (
     waveform                TEXT,
     -- type = 'post' — chatda do'stga yuborilgan post (post o'chirilsa NULL)
     shared_post_id          UUID REFERENCES posts(id) ON DELETE SET NULL,
+    -- story'ga javob sifatida yozilgan xabar (story o'chsa NULL)
+    story_id                UUID REFERENCES stories(id) ON DELETE SET NULL,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -295,6 +324,9 @@ CREATE INDEX IF NOT EXISTS idx_comments_parent_id ON comments(parent_id, created
 CREATE INDEX IF NOT EXISTS idx_comment_likes_user ON comment_likes(user_id);
 CREATE INDEX IF NOT EXISTS idx_reposts_user ON reposts(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_saved_posts_user ON saved_posts(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_stories_user_expires ON stories(user_id, expires_at);
+CREATE INDEX IF NOT EXISTS idx_stories_expires ON stories(expires_at);
+CREATE INDEX IF NOT EXISTS idx_story_views_viewer ON story_views(viewer_id);
 CREATE INDEX IF NOT EXISTS idx_post_media_post_id ON post_media(post_id);
 CREATE INDEX IF NOT EXISTS idx_conversation_participants_user ON conversation_participants(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_created   ON messages(conversation_id, created_at DESC);

@@ -36,8 +36,19 @@ const MESSAGE_SELECT_SQL = `
            rt.sender_username AS reply_to_sender_username, rt.deleted_for_everyone AS reply_to_deleted,
            COALESCE(rx.reactions, '[]'::json) AS reactions,
            m.shared_post_id, spv.shared_post,
+           m.story_id, stv.story,
            m.created_at
     FROM messages m
+    -- Story'ga javob: story kartochkasi uchun (24 soat o'tgach yoki
+    -- o'chirilgach NULL — "Story mavjud emas")
+    LEFT JOIN LATERAL (
+        SELECT json_build_object(
+                   'id', st.id, 'ownerId', st.user_id, 'mediaUrl', st.media_url,
+                   'mediaType', st.media_type, 'thumbnailUrl', st.thumbnail_url
+               ) AS story
+        FROM stories st
+        WHERE st.id = m.story_id AND st.expires_at > NOW()
+    ) stv ON true
     -- type = 'post': chatda ulashilgan postning kartochkasi uchun qisqa
     -- ko'rinishi (post o'chirilgan bo'lsa NULL — "Post mavjud emas")
     LEFT JOIN LATERAL (
@@ -230,7 +241,8 @@ async function listMessages(conversationId, userId, { limit, cursor } = {}) {
 // berilmasa — oddiy matnli xabar (content majburiy). replyToId berilsa —
 // shu suhbatdagi mavjud xabarga javob sifatida bog'lanadi. sharedPostId
 // berilsa — ulashilgan post (type 'post'), matn esa ixtiyoriy izoh.
-async function sendMessage(conversationId, senderId, content, { mediaUrl, type, replyToId, groupId, durationMs, waveform, sharedPostId } = {}) {
+// storyId — story'ga javob sifatida yozilgan matnli xabar.
+async function sendMessage(conversationId, senderId, content, { mediaUrl, type, replyToId, groupId, durationMs, waveform, sharedPostId, storyId } = {}) {
     if (!(await isParticipant(conversationId, senderId))) {
         throw httpError('Bu suhbatga kirish huquqingiz yo\'q', 403);
     }
@@ -247,13 +259,13 @@ async function sendMessage(conversationId, senderId, content, { mediaUrl, type, 
     }
 
     const { rows } = await pool.query(
-        `INSERT INTO messages (conversation_id, sender_id, content, media_url, type, status, reply_to_id, group_id, duration_ms, waveform, shared_post_id)
-         VALUES ($1, $2, $3, $4, $5, 'sent', $6, $7, $8, $9, $10)
+        `INSERT INTO messages (conversation_id, sender_id, content, media_url, type, status, reply_to_id, group_id, duration_ms, waveform, shared_post_id, story_id)
+         VALUES ($1, $2, $3, $4, $5, 'sent', $6, $7, $8, $9, $10, $11)
          RETURNING id`,
         [
             conversationId, senderId, trimmed, mediaUrl || null, type || 'text',
             replyToId || null, groupId || null, durationMs || null, waveform || null,
-            sharedPostId || null,
+            sharedPostId || null, storyId || null,
         ]
     );
     return fetchMessageById(rows[0].id);
