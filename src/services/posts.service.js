@@ -63,9 +63,9 @@ async function createPost(userId, { mediaItems, caption }) {
 
 // Post lenta, profil, repostlar, saqlanganlar va alohida ochilganda bir xil
 // shaklda qaytadi. $1 — so'rov yuborayotgan foydalanuvchi (viewer): u layk
-// bosganmi, repost/saqlaganmi, muallifni kuzatadimi. `extraColumns` /
-// `extraJoins` — repost/saqlanganlar ro'yxatlari uchun (masalan qachon
-// repost qilingani).
+// bosganmi, repost qilganmi (va qanday fikr qoldirgan), saqlaganmi,
+// muallifni kuzatadimi. `extraColumns` / `extraJoins` — repost/saqlanganlar
+// ro'yxatlari uchun (masalan qachon repost qilingani).
 function postSelectSql({ extraColumns = '', extraJoins = '' } = {}) {
     return `
         SELECT p.id, p.user_id, p.media_url, p.media_type, p.caption, p.thumbnail_url,
@@ -74,9 +74,8 @@ function postSelectSql({ extraColumns = '', extraJoins = '' } = {}) {
                EXISTS(
                    SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = $1
                ) AS is_liked,
-               EXISTS(
-                   SELECT 1 FROM reposts r WHERE r.post_id = p.id AND r.user_id = $1
-               ) AS is_reposted,
+               (myr.post_id IS NOT NULL) AS is_reposted,
+               myr.thought AS my_repost_thought,
                EXISTS(
                    SELECT 1 FROM saved_posts sv WHERE sv.post_id = p.id AND sv.user_id = $1
                ) AS is_saved,
@@ -87,6 +86,7 @@ function postSelectSql({ extraColumns = '', extraJoins = '' } = {}) {
                ${extraColumns}
         FROM posts p
         JOIN users u ON u.id = p.user_id
+        LEFT JOIN reposts myr ON myr.post_id = p.id AND myr.user_id = $1
         ${extraJoins}
         LEFT JOIN LATERAL (
             SELECT json_agg(
@@ -158,7 +158,8 @@ async function getPostById(postId, viewerId) {
 
 // ---------- Foydalanuvchi repost qilgan postlar (profil > Repostlar) ----------
 // Eng so'nggi repost birinchi; activity_at — qachon repost qilingani
-// (keyingi sahifa cursor'i shu bo'yicha).
+// (keyingi sahifa cursor'i shu bo'yicha). reposted_by — repost qilgan odam
+// va uning fikri (post ustida uning avatari va fikr pufakchasi chiqadi).
 async function getUserReposts({ userId, limit, cursor, viewerId } = {}) {
     const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 21, 1), 60);
     const params = [viewerId || null, userId];
@@ -171,8 +172,13 @@ async function getUserReposts({ userId, limit, cursor, viewerId } = {}) {
 
     const { rows } = await pool.query(
         `${postSelectSql({
-            extraColumns: ', rp.created_at AS activity_at',
-            extraJoins: 'JOIN reposts rp ON rp.post_id = p.id AND rp.user_id = $2',
+            extraColumns: `, rp.created_at AS activity_at,
+                json_build_object(
+                    'userId', ru.id, 'username', ru.username,
+                    'avatarUrl', ru.avatar_url, 'thought', rp.thought
+                ) AS reposted_by`,
+            extraJoins: `JOIN reposts rp ON rp.post_id = p.id AND rp.user_id = $2
+                         JOIN users ru ON ru.id = rp.user_id`,
         })}
          ${where}
          ORDER BY rp.created_at DESC
@@ -209,7 +215,13 @@ async function getSavedPosts({ viewerId, limit, cursor } = {}) {
 // ---------- Repost qilish / bekor qilish ----------
 // Idempotent (izoh laykidagi kabi). Har qanday postni, jumladan o'zinikini
 // ham repost qilish mumkin.
-async function setRepost(userId, postId, reposted) {
+//
+// thought — repostga fikr ("Add a thought"): berilsa (bo'sh satr — fikrni
+// o'chirish) repost bo'lmasa yaratiladi va fikr yoziladi; berilmasa (undefined)
+// mavjud fikrga tegilmaydi. Fikr ham shu so'rov orqali yoziladi — repost
+// tugmasi bosilib, darhol fikr yozilganda ikki so'rov qaysi tartibda kelsa
+// ham repost bitta bo'ladi va son to'g'ri qoladi (post qatori qulflanadi).
+async function setRepost(userId, postId, reposted, thought) {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
@@ -217,24 +229,45 @@ async function setRepost(userId, postId, reposted) {
         const post = await client.query('SELECT 1 FROM posts WHERE id = $1 FOR UPDATE', [postId]);
         if (!post.rows[0]) throw httpError('Post topilmadi', 404);
 
-        const changed = reposted
-            ? await client.query(
-                `INSERT INTO reposts (post_id, user_id) VALUES ($1, $2)
-                 ON CONFLICT DO NOTHING RETURNING post_id`,
-                [postId, userId]
-            )
-            : await client.query(
+        let changed;
+        if (!reposted) {
+            changed = await client.query(
                 'DELETE FROM reposts WHERE post_id = $1 AND user_id = $2 RETURNING post_id',
                 [postId, userId]
             );
+        } else if (thought === undefined) {
+            changed = await client.query(
+                `INSERT INTO reposts (post_id, user_id) VALUES ($1, $2)
+                 ON CONFLICT DO NOTHING RETURNING post_id`,
+                [postId, userId]
+            );
+        } else {
+            const text = thought == null ? '' : String(thought).trim();
+            // (xmax = 0) — qator yangi yaratildi (mavjudi yangilangan emas).
+            const upserted = await client.query(
+                `INSERT INTO reposts (post_id, user_id, thought) VALUES ($1, $2, $3)
+                 ON CONFLICT (post_id, user_id) DO UPDATE SET thought = EXCLUDED.thought
+                 RETURNING (xmax = 0) AS inserted`,
+                [postId, userId, text || null]
+            );
+            changed = { rows: upserted.rows[0].inserted ? upserted.rows : [] };
+        }
 
         const delta = changed.rows[0] ? (reposted ? 1 : -1) : 0;
         const { rows } = await client.query(
             'UPDATE posts SET reposts_count = GREATEST(reposts_count + $2, 0) WHERE id = $1 RETURNING reposts_count',
             [postId, delta]
         );
+        const mine = await client.query(
+            'SELECT thought FROM reposts WHERE post_id = $1 AND user_id = $2',
+            [postId, userId]
+        );
         await client.query('COMMIT');
-        return { repostsCount: rows[0].reposts_count, isReposted: reposted };
+        return {
+            repostsCount: rows[0].reposts_count,
+            isReposted: reposted,
+            thought: mine.rows[0]?.thought ?? null,
+        };
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
         throw err;

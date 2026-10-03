@@ -110,11 +110,13 @@ async function getSaved(req, res) {
     }
 }
 
-// POST|DELETE /posts/:id/repost
+// POST|DELETE /posts/:id/repost — POST body'da ixtiyoriy { thought }
+// (repostga fikr; bo'sh satr — fikrni o'chirish).
 function repostHandler(reposted) {
     return async (req, res) => {
         try {
-            res.json(await postsService.setRepost(req.userId, req.params.id, reposted));
+            const thought = reposted ? req.body?.thought : undefined;
+            res.json(await postsService.setRepost(req.userId, req.params.id, reposted, thought));
         } catch (err) {
             handleError(res, err);
         }

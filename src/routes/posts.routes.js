@@ -68,7 +68,12 @@ for (const [path, add, remove] of [
     ['/:id/save', controller.save, controller.unsave],
 ]) {
     const checks = [param('id').isUUID().withMessage('ID noto\'g\'ri')];
-    router.post(path, requireAuth, checks, validate, add);
+    const addChecks = path === '/:id/repost'
+        // Repostga fikr ("Add a thought") — ixtiyoriy, 100 belgigacha
+        ? [...checks, body('thought').optional({ nullable: true }).isString().withMessage('Fikr matn bo\'lishi kerak')
+            .trim().isLength({ max: 100 }).withMessage('Fikr 100 belgidan oshmasin')]
+        : checks;
+    router.post(path, requireAuth, addChecks, validate, add);
     router.delete(path, requireAuth, checks, validate, remove);
 }
 
