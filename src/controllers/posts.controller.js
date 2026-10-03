@@ -93,21 +93,48 @@ async function unlike(req, res) {
 // POST /posts/:id/comments
 async function addComment(req, res) {
     try {
-        const comment = await postsService.addComment(req.userId, req.params.id, req.body.content);
+        const comment = await postsService.addComment(
+            req.userId,
+            req.params.id,
+            req.body.content,
+            req.body.parentId || null
+        );
         res.status(201).json({ comment });
     } catch (err) {
         handleError(res, err);
     }
 }
 
-// GET /posts/:id/comments
+// GET /posts/:id/comments?parentId= — parentId bilan: shu izohning javoblari
 async function listComments(req, res) {
     try {
         const comments = await postsService.listComments(req.params.id, {
             limit: req.query.limit,
             cursor: req.query.cursor,
+            parentId: req.query.parentId,
+            viewerId: req.userId,
         });
         res.json({ comments });
+    } catch (err) {
+        handleError(res, err);
+    }
+}
+
+// POST /posts/:id/comments/:commentId/like
+async function likeComment(req, res) {
+    try {
+        const result = await postsService.setCommentLike(req.userId, req.params.id, req.params.commentId, true);
+        res.json(result);
+    } catch (err) {
+        handleError(res, err);
+    }
+}
+
+// DELETE /posts/:id/comments/:commentId/like
+async function unlikeComment(req, res) {
+    try {
+        const result = await postsService.setCommentLike(req.userId, req.params.id, req.params.commentId, false);
+        res.json(result);
     } catch (err) {
         handleError(res, err);
     }
@@ -121,4 +148,6 @@ module.exports = {
     unlike,
     addComment,
     listComments,
+    likeComment,
+    unlikeComment,
 };

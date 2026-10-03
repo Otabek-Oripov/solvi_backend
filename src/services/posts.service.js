@@ -201,8 +201,24 @@ async function unlikePost(userId, postId) {
     }
 }
 
-// ---------- Izoh qoldirish ----------
-async function addComment(userId, postId, content) {
+// Izoh ro'yxatda ham, yaratilganda ham bir xil shaklda qaytadi: muallifning
+// ismi/rasmi, layklar va javoblar soni hamda so'rov yuborayotgan
+// foydalanuvchi ($1) unga layk bosganmi.
+const COMMENT_SELECT_SQL = `
+    SELECT c.id, c.post_id, c.user_id, c.parent_id, c.content, c.created_at,
+           c.likes_count, c.replies_count,
+           u.username, u.avatar_url,
+           EXISTS(
+               SELECT 1 FROM comment_likes cl WHERE cl.comment_id = c.id AND cl.user_id = $1
+           ) AS is_liked
+    FROM comments c
+    JOIN users u ON u.id = c.user_id
+`;
+
+// ---------- Izoh (yoki izohga javob) qoldirish ----------
+// parentId berilsa — javob. Instagram'dagi kabi faqat BITTA daraja: javobga
+// javob yozilsa ham u yuqori darajadagi izohga bog'lanadi.
+async function addComment(userId, postId, content, parentId) {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
@@ -210,21 +226,36 @@ async function addComment(userId, postId, content) {
         const post = await client.query('SELECT id FROM posts WHERE id = $1', [postId]);
         if (!post.rows[0]) throw httpError('Post topilmadi', 404);
 
+        let rootId = null;
+        if (parentId) {
+            const parent = await client.query(
+                'SELECT id, parent_id FROM comments WHERE id = $1 AND post_id = $2',
+                [parentId, postId]
+            );
+            if (!parent.rows[0]) throw httpError('Izoh topilmadi', 404);
+            rootId = parent.rows[0].parent_id || parent.rows[0].id;
+        }
+
         const { rows } = await client.query(
-            `INSERT INTO comments (post_id, user_id, content)
-             VALUES ($1, $2, $3)
-             RETURNING id, post_id, user_id, content, created_at`,
-            [postId, userId, content]
+            `INSERT INTO comments (post_id, user_id, content, parent_id)
+             VALUES ($1, $2, $3, $4)
+             RETURNING id`,
+            [postId, userId, content, rootId]
         );
+        // Postdagi izohlar soniga javoblar ham kiradi (Instagram'dagi kabi).
         await client.query(
             'UPDATE posts SET comments_count = comments_count + 1 WHERE id = $1',
             [postId]
         );
-        // Ro'yxatdagi (listComments) bilan bir xil shakl: muallifning ismi va
-        // rasmi ham qaytadi — aks holda yangi izoh ilovada ismsiz ko'rinardi.
-        const author = await client.query('SELECT username, avatar_url FROM users WHERE id = $1', [userId]);
+        if (rootId) {
+            await client.query(
+                'UPDATE comments SET replies_count = replies_count + 1 WHERE id = $1',
+                [rootId]
+            );
+        }
+        const created = await client.query(`${COMMENT_SELECT_SQL} WHERE c.id = $2`, [userId, rows[0].id]);
         await client.query('COMMIT');
-        return { ...rows[0], ...author.rows[0] };
+        return created.rows[0];
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
         throw err;
@@ -234,27 +265,82 @@ async function addComment(userId, postId, content) {
 }
 
 // ---------- Izohlarni o'qish ----------
-async function listComments(postId, { limit, cursor } = {}) {
+// parentId berilmasa — yuqori darajadagi izohlar, eng yangisidan boshlab
+// (cursor = ro'yxatdagi eng eski izohning vaqti). parentId berilsa — shu
+// izohga yozilgan javoblar, suhbat tartibida eng eskisidan boshlab
+// (cursor = ro'yxatdagi eng so'nggi javobning vaqti).
+async function listComments(postId, { limit, cursor, parentId, viewerId } = {}) {
     const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 50);
-    const params = [postId];
-    let extraWhere = '';
+    const params = [viewerId || null, postId];
+    let where = 'WHERE c.post_id = $2';
+    let order;
+    if (parentId) {
+        params.push(parentId);
+        where += ` AND c.parent_id = $${params.length}`;
+        order = 'ASC';
+    } else {
+        where += ' AND c.parent_id IS NULL';
+        order = 'DESC';
+    }
     if (cursor) {
         params.push(cursor);
-        extraWhere = ` AND c.created_at < $${params.length}`;
+        // Cursor klientdan millisekund aniqligida qaytadi, bazada esa vaqt
+        // mikrosekundgacha saqlanadi — qisqartirmasdan solishtirilsa, "dan
+        // keyingi" shartiga cursor'ning o'z yozuvi ham tushib, qayta kelardi.
+        where += order === 'ASC'
+            ? ` AND date_trunc('milliseconds', c.created_at) > $${params.length}`
+            : ` AND c.created_at < $${params.length}`;
     }
     params.push(safeLimit);
 
     const { rows } = await pool.query(
-        `SELECT c.id, c.post_id, c.user_id, c.content, c.created_at,
-                u.username, u.avatar_url
-         FROM comments c
-         JOIN users u ON u.id = c.user_id
-         WHERE c.post_id = $1${extraWhere}
-         ORDER BY c.created_at DESC
+        `${COMMENT_SELECT_SQL}
+         ${where}
+         ORDER BY c.created_at ${order}
          LIMIT $${params.length}`,
         params
     );
     return rows;
+}
+
+// ---------- Izohga layk qo'yish / olib tashlash ----------
+// Ikkalasi ham idempotent: ketma-ket tez bosilganda (yoki qayta yuborilgan
+// so'rovda) xato emas, shunchaki joriy holat qaytadi.
+async function setCommentLike(userId, postId, commentId, liked) {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const comment = await client.query(
+            'SELECT id FROM comments WHERE id = $1 AND post_id = $2 FOR UPDATE',
+            [commentId, postId]
+        );
+        if (!comment.rows[0]) throw httpError('Izoh topilmadi', 404);
+
+        const changed = liked
+            ? await client.query(
+                `INSERT INTO comment_likes (comment_id, user_id) VALUES ($1, $2)
+                 ON CONFLICT DO NOTHING RETURNING comment_id`,
+                [commentId, userId]
+            )
+            : await client.query(
+                'DELETE FROM comment_likes WHERE comment_id = $1 AND user_id = $2 RETURNING comment_id',
+                [commentId, userId]
+            );
+
+        const delta = changed.rows[0] ? (liked ? 1 : -1) : 0;
+        const { rows } = await client.query(
+            'UPDATE comments SET likes_count = GREATEST(likes_count + $2, 0) WHERE id = $1 RETURNING likes_count',
+            [commentId, delta]
+        );
+        await client.query('COMMIT');
+        return { likesCount: rows[0].likes_count, isLiked: liked };
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
 }
 
 module.exports = {
@@ -265,4 +351,5 @@ module.exports = {
     unlikePost,
     addComment,
     listComments,
+    setCommentLike,
 };

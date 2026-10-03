@@ -65,6 +65,8 @@ router.post(
     [
         param('id').isUUID().withMessage('ID noto\'g\'ri'),
         body('content').trim().notEmpty().withMessage('Izoh bo\'sh bo\'lmasin').isLength({ max: 500 }).withMessage('Izoh 500 belgidan oshmasin'),
+        // Javob yozilayotgan izoh (ixtiyoriy)
+        body('parentId').optional({ values: 'falsy' }).isUUID().withMessage('parentId noto\'g\'ri'),
     ],
     validate,
     controller.addComment
@@ -73,9 +75,34 @@ router.post(
 router.get(
     '/:id/comments',
     requireAuth,
-    [param('id').isUUID().withMessage('ID noto\'g\'ri')],
+    [
+        param('id').isUUID().withMessage('ID noto\'g\'ri'),
+        query('parentId').optional({ values: 'falsy' }).isUUID().withMessage('parentId noto\'g\'ri'),
+    ],
     validate,
     controller.listComments
+);
+
+router.post(
+    '/:id/comments/:commentId/like',
+    requireAuth,
+    [
+        param('id').isUUID().withMessage('ID noto\'g\'ri'),
+        param('commentId').isUUID().withMessage('ID noto\'g\'ri'),
+    ],
+    validate,
+    controller.likeComment
+);
+
+router.delete(
+    '/:id/comments/:commentId/like',
+    requireAuth,
+    [
+        param('id').isUUID().withMessage('ID noto\'g\'ri'),
+        param('commentId').isUUID().withMessage('ID noto\'g\'ri'),
+    ],
+    validate,
+    controller.unlikeComment
 );
 
 module.exports = router;
