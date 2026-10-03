@@ -1,4 +1,5 @@
 const postsService = require('../services/posts.service');
+const { emitToParticipants } = require('../realtime/socket');
 const { handleError } = require('../utils/http');
 const { publicPath } = require('../middlewares/upload.middleware');
 
@@ -65,6 +66,89 @@ async function getUserPosts(req, res) {
             viewerId: req.userId,
         });
         res.json({ posts });
+    } catch (err) {
+        handleError(res, err);
+    }
+}
+
+// GET /posts/:id — bitta post (chatda yuborilgan postni ochganda)
+async function getPost(req, res) {
+    try {
+        const post = await postsService.getPostById(req.params.id, req.userId);
+        res.json({ post });
+    } catch (err) {
+        handleError(res, err);
+    }
+}
+
+// GET /posts/user/:id/reposts — profil > Repostlar tabi
+async function getUserReposts(req, res) {
+    try {
+        const posts = await postsService.getUserReposts({
+            userId: req.params.id,
+            limit: req.query.limit,
+            cursor: req.query.cursor,
+            viewerId: req.userId,
+        });
+        res.json({ posts });
+    } catch (err) {
+        handleError(res, err);
+    }
+}
+
+// GET /posts/saved — o'zim saqlagan postlar
+async function getSaved(req, res) {
+    try {
+        const posts = await postsService.getSavedPosts({
+            viewerId: req.userId,
+            limit: req.query.limit,
+            cursor: req.query.cursor,
+        });
+        res.json({ posts });
+    } catch (err) {
+        handleError(res, err);
+    }
+}
+
+// POST|DELETE /posts/:id/repost
+function repostHandler(reposted) {
+    return async (req, res) => {
+        try {
+            res.json(await postsService.setRepost(req.userId, req.params.id, reposted));
+        } catch (err) {
+            handleError(res, err);
+        }
+    };
+}
+
+// POST|DELETE /posts/:id/save
+function saveHandler(saved) {
+    return async (req, res) => {
+        try {
+            res.json(await postsService.setSaved(req.userId, req.params.id, saved));
+        } catch (err) {
+            handleError(res, err);
+        }
+    };
+}
+
+// POST /posts/:id/send — { userIds: [...], content? } — postni do'stlarga
+// chat orqali yuborish; har bir xabar oluvchiga socket orqali darhol yetadi.
+async function sendPost(req, res) {
+    try {
+        const messages = await postsService.sendPostToUsers(
+            req.userId,
+            req.params.id,
+            req.body.userIds,
+            req.body.content
+        );
+        const io = req.app.get('io');
+        if (io) {
+            for (const message of messages) {
+                await emitToParticipants(io, message.conversation_id, 'message:new', message);
+            }
+        }
+        res.status(201).json({ messages });
     } catch (err) {
         handleError(res, err);
     }
@@ -144,6 +228,14 @@ module.exports = {
     create,
     getFeed,
     getUserPosts,
+    getPost,
+    getUserReposts,
+    getSaved,
+    repost: repostHandler(true),
+    unrepost: repostHandler(false),
+    save: saveHandler(true),
+    unsave: saveHandler(false),
+    sendPost,
     like,
     unlike,
     addComment,

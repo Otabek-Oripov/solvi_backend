@@ -35,8 +35,20 @@ const MESSAGE_SELECT_SQL = `
            rt.content AS reply_to_content, rt.type AS reply_to_type,
            rt.sender_username AS reply_to_sender_username, rt.deleted_for_everyone AS reply_to_deleted,
            COALESCE(rx.reactions, '[]'::json) AS reactions,
+           m.shared_post_id, spv.shared_post,
            m.created_at
     FROM messages m
+    -- type = 'post': chatda ulashilgan postning kartochkasi uchun qisqa
+    -- ko'rinishi (post o'chirilgan bo'lsa NULL — "Post mavjud emas")
+    LEFT JOIN LATERAL (
+        SELECT json_build_object(
+                   'id', sp.id, 'mediaUrl', sp.media_url, 'mediaType', sp.media_type,
+                   'thumbnailUrl', sp.thumbnail_url, 'caption', sp.caption,
+                   'username', su.username, 'avatarUrl', su.avatar_url
+               ) AS shared_post
+        FROM posts sp JOIN users su ON su.id = sp.user_id
+        WHERE sp.id = m.shared_post_id
+    ) spv ON true
     LEFT JOIN LATERAL (
         SELECT rm.content, rm.type, rm.deleted_for_everyone, ru.username AS sender_username
         FROM messages rm JOIN users ru ON ru.id = rm.sender_id
@@ -216,13 +228,14 @@ async function listMessages(conversationId, userId, { limit, cursor } = {}) {
 // ---------- Yangi xabar yuborish ----------
 // mediaUrl berilsa — rasm/video xabari (content ixtiyoriy, izoh sifatida);
 // berilmasa — oddiy matnli xabar (content majburiy). replyToId berilsa —
-// shu suhbatdagi mavjud xabarga javob sifatida bog'lanadi.
-async function sendMessage(conversationId, senderId, content, { mediaUrl, type, replyToId, groupId, durationMs, waveform } = {}) {
+// shu suhbatdagi mavjud xabarga javob sifatida bog'lanadi. sharedPostId
+// berilsa — ulashilgan post (type 'post'), matn esa ixtiyoriy izoh.
+async function sendMessage(conversationId, senderId, content, { mediaUrl, type, replyToId, groupId, durationMs, waveform, sharedPostId } = {}) {
     if (!(await isParticipant(conversationId, senderId))) {
         throw httpError('Bu suhbatga kirish huquqingiz yo\'q', 403);
     }
     const trimmed = (content || '').trim();
-    if (!mediaUrl && !trimmed) throw httpError('Xabar bo\'sh bo\'lmasin', 400);
+    if (!mediaUrl && !sharedPostId && !trimmed) throw httpError('Xabar bo\'sh bo\'lmasin', 400);
     if (trimmed.length > 2000) throw httpError('Xabar juda uzun', 400);
 
     if (replyToId) {
@@ -234,12 +247,13 @@ async function sendMessage(conversationId, senderId, content, { mediaUrl, type, 
     }
 
     const { rows } = await pool.query(
-        `INSERT INTO messages (conversation_id, sender_id, content, media_url, type, status, reply_to_id, group_id, duration_ms, waveform)
-         VALUES ($1, $2, $3, $4, $5, 'sent', $6, $7, $8, $9)
+        `INSERT INTO messages (conversation_id, sender_id, content, media_url, type, status, reply_to_id, group_id, duration_ms, waveform, shared_post_id)
+         VALUES ($1, $2, $3, $4, $5, 'sent', $6, $7, $8, $9, $10)
          RETURNING id`,
         [
             conversationId, senderId, trimmed, mediaUrl || null, type || 'text',
             replyToId || null, groupId || null, durationMs || null, waveform || null,
+            sharedPostId || null,
         ]
     );
     return fetchMessageById(rows[0].id);
@@ -373,7 +387,8 @@ async function getPinnedMessage(conversationId, userId) {
 // maqsad suhbatning ishtirokchisi bo'lishi shart).
 async function forwardMessage(messageId, targetConversationId, userId) {
     const src = await pool.query(
-        `SELECT m.content, m.media_url, m.type, m.duration_ms, m.waveform, u.username AS sender_username
+        `SELECT m.content, m.media_url, m.type, m.duration_ms, m.waveform, m.shared_post_id,
+                u.username AS sender_username
          FROM messages m
          JOIN conversation_participants cp ON cp.conversation_id = m.conversation_id AND cp.user_id = $2
          JOIN users u ON u.id = m.sender_id
@@ -388,13 +403,15 @@ async function forwardMessage(messageId, targetConversationId, userId) {
     const { rows } = await pool.query(
         // duration_ms/waveform — ovozli xabarda davomiylik va to'lqin shakli;
         // ularsiz forward qilingan ovozli xabar "00:00" bo'lib ko'rinardi.
+        // shared_post_id — ulashilgan post xabari forward qilinganda.
         `INSERT INTO messages (conversation_id, sender_id, content, media_url, type, status,
-                               is_forwarded, forwarded_from_username, duration_ms, waveform)
-         VALUES ($1, $2, $3, $4, $5, 'sent', true, $6, $7, $8)
+                               is_forwarded, forwarded_from_username, duration_ms, waveform,
+                               shared_post_id)
+         VALUES ($1, $2, $3, $4, $5, 'sent', true, $6, $7, $8, $9)
          RETURNING id`,
         [
             targetConversationId, userId, source.content, source.media_url, source.type,
-            source.sender_username, source.duration_ms, source.waveform,
+            source.sender_username, source.duration_ms, source.waveform, source.shared_post_id,
         ]
     );
     return fetchMessageById(rows[0].id);

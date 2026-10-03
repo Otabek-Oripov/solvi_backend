@@ -123,7 +123,26 @@ CREATE TABLE IF NOT EXISTS posts (
     views_count     INTEGER NOT NULL DEFAULT 0,
     likes_count     INTEGER NOT NULL DEFAULT 0,
     comments_count  INTEGER NOT NULL DEFAULT 0,
+    reposts_count   INTEGER NOT NULL DEFAULT 0,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Boshqaning postini o'z profiliga "repost" qilish (hammaga ochiq)
+CREATE TABLE IF NOT EXISTS reposts (
+    post_id    UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (post_id, user_id)
+);
+
+-- Saqlangan (bookmark) postlar — faqat egasiga ko'rinadi
+CREATE TABLE IF NOT EXISTS saved_posts (
+    post_id    UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (post_id, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS likes (
@@ -194,7 +213,8 @@ CREATE TABLE IF NOT EXISTS messages (
     sender_id               UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     content                 TEXT NOT NULL,
     media_url               TEXT,
-    type                    VARCHAR(10) NOT NULL DEFAULT 'text' CHECK (type IN ('text', 'image', 'video', 'voice', 'gif')),
+    type                    VARCHAR(10) NOT NULL DEFAULT 'text'
+                            CONSTRAINT chk_messages_type CHECK (type IN ('text', 'image', 'video', 'voice', 'gif', 'post')),
     status                  VARCHAR(10) NOT NULL DEFAULT 'sent' CHECK (status IN ('sent', 'delivered', 'read')),
     reply_to_id             UUID REFERENCES messages(id) ON DELETE SET NULL,
     is_pinned               BOOLEAN NOT NULL DEFAULT false,
@@ -205,6 +225,8 @@ CREATE TABLE IF NOT EXISTS messages (
     group_id                TEXT,
     duration_ms             INTEGER,
     waveform                TEXT,
+    -- type = 'post' — chatda do'stga yuborilgan post (post o'chirilsa NULL)
+    shared_post_id          UUID REFERENCES posts(id) ON DELETE SET NULL,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -269,6 +291,8 @@ CREATE INDEX IF NOT EXISTS idx_comments_post_id ON comments(post_id);
 CREATE INDEX IF NOT EXISTS idx_comments_user_id ON comments(user_id);
 CREATE INDEX IF NOT EXISTS idx_comments_parent_id ON comments(parent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_comment_likes_user ON comment_likes(user_id);
+CREATE INDEX IF NOT EXISTS idx_reposts_user ON reposts(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_saved_posts_user ON saved_posts(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_post_media_post_id ON post_media(post_id);
 CREATE INDEX IF NOT EXISTS idx_conversation_participants_user ON conversation_participants(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_created   ON messages(conversation_id, created_at DESC);

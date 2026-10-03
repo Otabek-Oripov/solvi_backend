@@ -32,6 +32,10 @@ router.post(
 
 router.get('/feed', requireAuth, controller.getFeed);
 
+// Diqqat: `/saved` — `/:id` dan OLDIN bo'lishi shart, aks holda "saved"
+// UUID parametr sifatida talqin qilinib, 400 xato qaytaradi.
+router.get('/saved', requireAuth, controller.getSaved);
+
 router.get(
     '/user/:id',
     requireAuth,
@@ -41,6 +45,44 @@ router.get(
     ],
     validate,
     controller.getUserPosts
+);
+
+router.get(
+    '/user/:id/reposts',
+    requireAuth,
+    [param('id').isUUID().withMessage('ID noto\'g\'ri')],
+    validate,
+    controller.getUserReposts
+);
+
+router.get(
+    '/:id',
+    requireAuth,
+    [param('id').isUUID().withMessage('ID noto\'g\'ri')],
+    validate,
+    controller.getPost
+);
+
+for (const [path, add, remove] of [
+    ['/:id/repost', controller.repost, controller.unrepost],
+    ['/:id/save', controller.save, controller.unsave],
+]) {
+    const checks = [param('id').isUUID().withMessage('ID noto\'g\'ri')];
+    router.post(path, requireAuth, checks, validate, add);
+    router.delete(path, requireAuth, checks, validate, remove);
+}
+
+router.post(
+    '/:id/send',
+    requireAuth,
+    [
+        param('id').isUUID().withMessage('ID noto\'g\'ri'),
+        body('userIds').isArray({ min: 1, max: 20 }).withMessage('Kimga yuborishni tanlang (ko\'pi bilan 20 kishi)'),
+        body('userIds.*').isUUID().withMessage('userId noto\'g\'ri'),
+        body('content').optional({ values: 'falsy' }).isString().trim().isLength({ max: 2000 }).withMessage('Xabar juda uzun'),
+    ],
+    validate,
+    controller.sendPost
 );
 
 router.post(
