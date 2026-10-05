@@ -4,7 +4,8 @@ const { handleError } = require('../utils/http');
 const { publicPath, removeUploadedFile } = require('../middlewares/upload.middleware');
 
 // POST /stories — multipart: "media" fayl (+ ixtiyoriy "thumbnail") YOKI
-// "postId" (postni story'ga qo'shish); "overlays" — matn/emoji'lar (JSON).
+// "postId" (postni story'ga qo'shish); "overlays" — matn/emoji'lar (JSON);
+// "expiresInMinutes" — ixtiyoriy muddat (berilmasa 24 soat).
 async function create(req, res) {
     try {
         const mediaFile = req.files?.media?.[0];
@@ -21,6 +22,7 @@ async function create(req, res) {
             postId: req.body.postId || null,
             overlays: req.body.overlays,
             durationMs: req.body.durationMs,
+            expiresInMinutes: req.body.expiresInMinutes,
         });
         res.status(201).json({ story });
     } catch (err) {

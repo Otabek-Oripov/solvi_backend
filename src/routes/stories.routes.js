@@ -34,6 +34,9 @@ router.post(
     [
         body('postId').optional({ values: 'falsy' }).isUUID().withMessage('postId noto\'g\'ri'),
         body('durationMs').optional({ values: 'falsy' }).isInt({ min: 0 }).withMessage('durationMs noto\'g\'ri'),
+        // Necha daqiqadan keyin o'chishi (ixtiyoriy, berilmasa 24 soat)
+        body('expiresInMinutes').optional({ values: 'falsy' }).isInt({ min: 1, max: 7 * 24 * 60 })
+            .withMessage('Story muddati 1 daqiqadan 7 kungacha bo\'lishi kerak'),
     ],
     validate,
     controller.create

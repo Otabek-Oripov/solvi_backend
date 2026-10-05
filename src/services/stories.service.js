@@ -83,11 +83,27 @@ async function getActiveStory(storyId) {
     return rows[0];
 }
 
+// Story qancha turishi — foydalanuvchi o'zi tanlashi mumkin (1 daqiqadan
+// 7 kungacha); tanlamasa 24 soat (Instagram'dagidek).
+const DEFAULT_LIFETIME_MINUTES = 24 * 60;
+const MAX_LIFETIME_MINUTES = 7 * 24 * 60;
+
+function lifetimeMinutes(value) {
+    if (value == null || value === '') return DEFAULT_LIFETIME_MINUTES;
+    const minutes = Number(value);
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > MAX_LIFETIME_MINUTES) {
+        throw httpError('Story muddati 1 daqiqadan 7 kungacha bo\'lishi kerak', 400);
+    }
+    return minutes;
+}
+
 // ---------- Story yaratish ----------
 // Yoki yuklangan fayl (upload), yoki mavjud post (postId — "Story'ga
-// qo'shish"); ikkalasi birga emas.
-async function createStory(userId, { upload, postId, overlays, durationMs }) {
+// qo'shish"); ikkalasi birga emas. expiresInMinutes — necha daqiqadan keyin
+// o'chishi (berilmasa 24 soat).
+async function createStory(userId, { upload, postId, overlays, durationMs, expiresInMinutes }) {
     const items = sanitizeOverlays(overlays);
+    const lifetime = lifetimeMinutes(expiresInMinutes);
     if (upload && postId) throw httpError('Yoki fayl, yoki post tanlang', 400);
 
     let media;
@@ -120,12 +136,12 @@ async function createStory(userId, { upload, postId, overlays, durationMs }) {
 
     const { rows } = await pool.query(
         `INSERT INTO stories (user_id, media_url, media_type, thumbnail_url, duration_ms,
-                              source_post_id, owns_media, overlays)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+                              source_post_id, owns_media, overlays, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, NOW() + make_interval(mins => $9))
          RETURNING id`,
         [
             userId, media.mediaUrl, media.mediaType, media.thumbnailUrl || null, duration,
-            postId || null, media.ownsMedia, JSON.stringify(items),
+            postId || null, media.ownsMedia, JSON.stringify(items), lifetime,
         ]
     );
     return fetchStory(rows[0].id, userId);

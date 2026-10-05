@@ -191,7 +191,9 @@ CREATE TABLE IF NOT EXISTS comment_likes (
     PRIMARY KEY (comment_id, user_id)
 );
 
--- Story'lar (Instagram uslubida, 24 soat yashaydi). source_post_id — story
+-- Story'lar (Instagram uslubida; odatda 24 soat yashaydi, joylashda
+-- foydalanuvchi 1 daqiqadan 7 kungacha o'zi tanlashi mumkin — expires_at
+-- shunda backend tomonidan yoziladi). source_post_id — story
 -- postdan yaratilgan bo'lsa; owns_media — fayl shu story uchun yuklangan
 -- (o'chirilganda fayl ham o'chadi). overlays — ustidagi matn/emoji'lar.
 CREATE TABLE IF NOT EXISTS stories (
