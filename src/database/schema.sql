@@ -124,6 +124,8 @@ CREATE TABLE IF NOT EXISTS posts (
     likes_count     INTEGER NOT NULL DEFAULT 0,
     comments_count  INTEGER NOT NULL DEFAULT 0,
     reposts_count   INTEGER NOT NULL DEFAULT 0,
+    -- post_tags qaysi qoidalar versiyasi bilan ajratilgani (0 — hali ajratilmagan)
+    tags_version    SMALLINT NOT NULL DEFAULT 0,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -189,6 +191,53 @@ CREATE TABLE IF NOT EXISTS comment_likes (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     PRIMARY KEY (comment_id, user_id)
+);
+
+-- ------------------------------------------------ "Siz uchun" tavsiyalari
+-- Post mavzulari: caption'dagi #hashtag'lar (og'irligi 1) va kalit so'zlar (0.4)
+CREATE TABLE IF NOT EXISTS post_tags (
+    post_id UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    tag     VARCHAR(50) NOT NULL,
+    weight  REAL NOT NULL DEFAULT 1,
+
+    PRIMARY KEY (post_id, tag)
+);
+
+-- Kim qaysi postni qancha ko'rgani (oxirigacha ko'rdimi, tez o'tkazib yubordimi)
+CREATE TABLE IF NOT EXISTS post_views (
+    post_id        UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    user_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    view_count     INTEGER NOT NULL DEFAULT 1,
+    total_watch_ms BIGINT NOT NULL DEFAULT 0,
+    max_progress   REAL NOT NULL DEFAULT 0,
+    completed      BOOLEAN NOT NULL DEFAULT false,
+    skipped        BOOLEAN NOT NULL DEFAULT false,
+    first_viewed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_viewed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (post_id, user_id)
+);
+
+-- Foydalanuvchining mavzu ('tag') va muallif ('author') bo'yicha qiziqish bali
+-- (vaqt o'tishi bilan so'nadi — 14 kunda yarmi)
+CREATE TABLE IF NOT EXISTS user_interests (
+    user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind       VARCHAR(10) NOT NULL CHECK (kind IN ('tag', 'author')),
+    key        TEXT NOT NULL,
+    score      REAL NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (user_id, kind, key)
+);
+
+-- Bitta lenta sessiyasida allaqachon ko'rsatilgan postlar (2 kundan keyin tozalanadi)
+CREATE TABLE IF NOT EXISTS feed_impressions (
+    session_id UUID NOT NULL,
+    user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    post_id    UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    served_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (session_id, post_id)
 );
 
 -- Story'lar (Instagram uslubida; odatda 24 soat yashaydi, joylashda
@@ -330,6 +379,11 @@ CREATE INDEX IF NOT EXISTS idx_stories_user_expires ON stories(user_id, expires_
 CREATE INDEX IF NOT EXISTS idx_stories_expires ON stories(expires_at);
 CREATE INDEX IF NOT EXISTS idx_story_views_viewer ON story_views(viewer_id);
 CREATE INDEX IF NOT EXISTS idx_post_media_post_id ON post_media(post_id);
+CREATE INDEX IF NOT EXISTS idx_post_tags_tag ON post_tags(tag);
+CREATE INDEX IF NOT EXISTS idx_post_views_user ON post_views(user_id, last_viewed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_user_interests_top ON user_interests(user_id, kind, score DESC);
+CREATE INDEX IF NOT EXISTS idx_feed_impressions_served ON feed_impressions(served_at);
+CREATE INDEX IF NOT EXISTS idx_posts_user_created ON posts(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_conversation_participants_user ON conversation_participants(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_created   ON messages(conversation_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_sender    ON messages(conversation_id, sender_id, status);

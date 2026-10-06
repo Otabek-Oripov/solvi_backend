@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { recordFollowSignal } = require('./recommendation.service');
 const { buildFilterClause } = require('./matching.service');
 
 // Flutter'ga qaytariladigan xavfsiz ustunlar (password_hash hech qachon emas).
@@ -245,6 +246,7 @@ async function followUser(followerId, targetId) {
         if (err.code === '23505') throw httpError('Siz allaqachon kuzatyapsiz', 409);
         throw err;
     }
+    await recordFollowSignal(followerId, targetId, true);
 
     return getProfile(targetId, followerId);
 }
@@ -255,6 +257,7 @@ async function unfollowUser(followerId, targetId) {
         [followerId, targetId]
     );
     if (!rows[0]) throw httpError('Siz bu foydalanuvchini kuzatmayapsiz', 404);
+    await recordFollowSignal(followerId, targetId, false);
 
     return getProfile(targetId, followerId);
 }

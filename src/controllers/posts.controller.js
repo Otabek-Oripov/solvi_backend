@@ -1,4 +1,6 @@
+const crypto = require('crypto');
 const postsService = require('../services/posts.service');
+const { recordViews } = require('../services/recommendation.service');
 const { emitToParticipants } = require('../realtime/socket');
 const { handleError } = require('../utils/http');
 const { publicPath } = require('../middlewares/upload.middleware');
@@ -41,15 +43,41 @@ async function create(req, res) {
     }
 }
 
-// GET /posts/feed — lenta
+// GET /posts/feed?mode=for_you|following — lenta.
+//  - for_you (standart): tavsiya lentasi; session — lenta ochilishi
+//    identifikatori (berilmasa server yangisini yaratadi va javobda
+//    qaytaradi). Keyingi sahifalar shu session bilan so'raladi — ko'rsatilgan
+//    postlar takrorlanmaydi.
+//  - following: faqat kuzatilayotganlar postlari, eng yangisidan (cursor).
 async function getFeed(req, res) {
     try {
-        const posts = await postsService.getFeed({
-            limit: req.query.limit,
-            cursor: req.query.cursor,
+        if (req.query.mode === 'following') {
+            const posts = await postsService.getFollowingFeed({
+                viewerId: req.userId,
+                limit: req.query.limit,
+                cursor: req.query.cursor,
+            });
+            return res.json({ posts, mode: 'following' });
+        }
+
+        const session = req.query.session || crypto.randomUUID();
+        const posts = await postsService.getForYouFeed({
             viewerId: req.userId,
+            sessionId: session,
+            limit: req.query.limit,
         });
-        res.json({ posts });
+        res.json({ posts, mode: 'for_you', session });
+    } catch (err) {
+        handleError(res, err);
+    }
+}
+
+// POST /posts/views — { events: [{ postId, watchMs, durationMs?, progress?, source? }] }
+// Ilova ko'rishlarni to'plab, guruh bilan yuboradi (tavsiya signallari va
+// ko'rishlar soni shundan).
+async function views(req, res) {
+    try {
+        res.json(await recordViews(req.userId, req.body.events));
     } catch (err) {
         handleError(res, err);
     }
@@ -229,6 +257,7 @@ async function unlikeComment(req, res) {
 module.exports = {
     create,
     getFeed,
+    views,
     getUserPosts,
     getPost,
     getUserReposts,

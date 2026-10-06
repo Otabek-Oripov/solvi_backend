@@ -30,7 +30,34 @@ router.post(
     controller.create
 );
 
-router.get('/feed', requireAuth, controller.getFeed);
+router.get(
+    '/feed',
+    requireAuth,
+    [
+        query('mode').optional().isIn(['for_you', 'following']).withMessage('mode noto\'g\'ri'),
+        query('session').optional({ values: 'falsy' }).isUUID().withMessage('session noto\'g\'ri'),
+        query('limit').optional().isInt({ min: 1, max: 30 }).withMessage('limit noto\'g\'ri'),
+        query('cursor').optional({ values: 'falsy' }).isISO8601().withMessage('cursor noto\'g\'ri'),
+    ],
+    validate,
+    controller.getFeed
+);
+
+// Ko'rishlar (tavsiya signallari): bir so'rovda ko'pi bilan 50 ta
+router.post(
+    '/views',
+    requireAuth,
+    [
+        body('events').isArray({ min: 1, max: 50 }).withMessage('events — 1..50 ta ko\'rish'),
+        body('events.*.postId').isUUID().withMessage('postId noto\'g\'ri'),
+        body('events.*.watchMs').isInt({ min: 0, max: 3600000 }).withMessage('watchMs noto\'g\'ri'),
+        body('events.*.durationMs').optional({ nullable: true }).isInt({ min: 0, max: 3600000 }).withMessage('durationMs noto\'g\'ri'),
+        body('events.*.progress').optional({ nullable: true }).isFloat({ min: 0, max: 1 }).withMessage('progress noto\'g\'ri'),
+        body('events.*.source').optional({ nullable: true }).isString().isLength({ max: 20 }),
+    ],
+    validate,
+    controller.views
+);
 
 // Diqqat: `/saved` — `/:id` dan OLDIN bo'lishi shart, aks holda "saved"
 // UUID parametr sifatida talqin qilinib, 400 xato qaytaradi.

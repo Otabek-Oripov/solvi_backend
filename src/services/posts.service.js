@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { getOrCreateDirectConversation, sendMessage } = require('./messaging.service');
+const { tagPost, recordSignal, rankForYouIds } = require('./recommendation.service');
 
 function httpError(message, status) {
     const err = new Error(message);
@@ -50,6 +51,8 @@ async function createPost(userId, { mediaItems, caption }) {
                 [post.id, item.mediaUrl, item.mediaType, item.thumbnailUrl || null, item.duration || null, i]
             );
         }
+        // "Siz uchun" lentasi uchun post mavzulari (#hashtag / kalit so'zlar)
+        await tagPost(client, post.id, caption);
 
         await client.query('COMMIT');
         return { ...post, media: mediaItems.map((m, i) => ({ url: m.mediaUrl, mediaType: m.mediaType, position: i })) };
@@ -99,12 +102,31 @@ function postSelectSql({ extraColumns = '', extraJoins = '' } = {}) {
     `;
 }
 
-// ---------- Lenta (feed) — sahifalash cursor (oxirgi postning created_at'i) orqali ----------
-async function getFeed({ limit, cursor, viewerId } = {}) {
+// ---------- "Siz uchun" lentasi ----------
+// Tartibni tavsiya servisi belgilaydi (qiziqishlar, follow, o'xshash
+// foydalanuvchilar, ommaboplik, yangilik). sessionId — bitta lenta ochilishi:
+// shu sessiyada ko'rsatilgan postlar keyingi sahifalarda takrorlanmaydi.
+async function getForYouFeed({ viewerId, sessionId, limit } = {}) {
     const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 30);
-    const params = [viewerId || null];
+    const ids = await rankForYouIds(viewerId, sessionId, safeLimit);
+    if (!ids.length) return [];
+
+    const { rows } = await pool.query(
+        `${postSelectSql()} WHERE p.id = ANY($2::uuid[])`,
+        [viewerId, ids]
+    );
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    return ids.map((id) => byId.get(id)).filter(Boolean);
+}
+
+// ---------- "Kuzatilayotganlar" lentasi — faqat kuzatilayotgan odamlar
+// postlari, eng yangisidan (cursor — oxirgi postning created_at'i) ----------
+async function getFollowingFeed({ viewerId, limit, cursor } = {}) {
+    const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 30);
+    const params = [viewerId];
     // Bloklangan (is_active = false) foydalanuvchining postlari lentaga chiqmaydi
-    let where = 'WHERE u.is_active = true';
+    let where = `WHERE u.is_active = true
+                   AND p.user_id IN (SELECT following_id FROM follows WHERE follower_id = $1)`;
     if (cursor) {
         params.push(cursor);
         where += ` AND p.created_at < $${params.length}`;
@@ -263,6 +285,7 @@ async function setRepost(userId, postId, reposted, thought) {
             [postId, userId]
         );
         await client.query('COMMIT');
+        if (delta) await recordSignal(userId, postId, reposted ? 'repost' : 'unrepost');
         return {
             repostsCount: rows[0].reposts_count,
             isReposted: reposted,
@@ -281,14 +304,13 @@ async function setSaved(userId, postId, saved) {
     const post = await pool.query('SELECT 1 FROM posts WHERE id = $1', [postId]);
     if (!post.rows[0]) throw httpError('Post topilmadi', 404);
 
-    if (saved) {
-        await pool.query(
+    const changed = saved
+        ? await pool.query(
             'INSERT INTO saved_posts (post_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
             [postId, userId]
-        );
-    } else {
-        await pool.query('DELETE FROM saved_posts WHERE post_id = $1 AND user_id = $2', [postId, userId]);
-    }
+        )
+        : await pool.query('DELETE FROM saved_posts WHERE post_id = $1 AND user_id = $2', [postId, userId]);
+    if (changed.rowCount) await recordSignal(userId, postId, saved ? 'save' : 'unsave');
     return { isSaved: saved };
 }
 
@@ -323,6 +345,7 @@ async function sendPostToUsers(senderId, postId, userIds, content) {
             })
         );
     }
+    await recordSignal(senderId, postId, 'share');
     return messages;
 }
 
@@ -347,6 +370,7 @@ async function likePost(userId, postId) {
             [postId]
         );
         await client.query('COMMIT');
+        await recordSignal(userId, postId, 'like');
         return { likesCount: rows[0].likes_count };
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
@@ -373,6 +397,7 @@ async function unlikePost(userId, postId) {
             [postId]
         );
         await client.query('COMMIT');
+        await recordSignal(userId, postId, 'unlike');
         return { likesCount: rows[0].likes_count };
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
@@ -436,6 +461,7 @@ async function addComment(userId, postId, content, parentId) {
         }
         const created = await client.query(`${COMMENT_SELECT_SQL} WHERE c.id = $2`, [userId, rows[0].id]);
         await client.query('COMMIT');
+        await recordSignal(userId, postId, 'comment');
         return created.rows[0];
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
@@ -526,7 +552,8 @@ async function setCommentLike(userId, postId, commentId, liked) {
 
 module.exports = {
     createPost,
-    getFeed,
+    getForYouFeed,
+    getFollowingFeed,
     getUserPosts,
     getPostById,
     getUserReposts,

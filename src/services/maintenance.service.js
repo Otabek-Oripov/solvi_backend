@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { purgeExpiredStories } = require('./stories.service');
+const { purgeRecommendationData, tagUntaggedPosts } = require('./recommendation.service');
 const { removeUploadedFile } = require('../middlewares/upload.middleware');
 
 // Story'lar 24 soatda o'chadi — ko'rsatish so'rovlari muddatni o'zi
@@ -38,6 +39,12 @@ async function purgeExpiredRows() {
     // 24 soati o'tgan story'lar (va faqat ular uchun yuklangan fayllar).
     const storyFiles = await purgeExpiredStories();
     storyFiles.forEach(removeUploadedFile);
+
+    // "Siz uchun" lentasi: eski sessiyalar va so'ngan qiziqishlar; mavzusi
+    // hali ajratilmagan postlar (masalan migratsiyadan oldingilar).
+    await purgeRecommendationData();
+    const tagged = await tagUntaggedPosts();
+    if (tagged) console.log(`Tavsiya: ${tagged} ta post mavzusi ajratildi`);
 }
 
 function startMaintenance() {
