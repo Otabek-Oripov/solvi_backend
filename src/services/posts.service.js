@@ -1,6 +1,7 @@
 const pool = require('../config/db');
 const { getOrCreateDirectConversation, sendMessage } = require('./messaging.service');
-const { tagPost, recordSignal, rankForYouIds } = require('./recommendation.service');
+const { tagPost, recordSignal, rankForYouIds, normalizeKey } = require('./recommendation.service');
+const { visibleToViewerSql } = require('../utils/postVisibility');
 
 function httpError(message, status) {
     const err = new Error(message);
@@ -10,15 +11,33 @@ function httpError(message, status) {
 
 const POST_FIELDS = `
     id, user_id, media_url, media_type, caption, thumbnail_url, duration,
-    views_count, likes_count, comments_count, created_at
+    views_count, likes_count, comments_count, created_at,
+    visibility, comments_enabled, hide_like_count, allow_downloads, edited_at
 `;
+
+// Post viewer'ga ko'rinsa — uning qatori (layk, izoh, saqlash va h.k. shu
+// tekshiruvdan o'tadi), aks holda 404: yopiq post borligi ham bilinmasin.
+async function loadVisiblePost(db, postId, viewerId, { forUpdate = false } = {}) {
+    const { rows } = await db.query(
+        `SELECT p.id, p.user_id, p.visibility, p.comments_enabled
+         FROM posts p JOIN users u ON u.id = p.user_id
+         WHERE p.id = $2 AND u.is_active = true AND ${visibleToViewerSql('$1')}
+         ${forUpdate ? 'FOR UPDATE OF p' : ''}`,
+        [viewerId || null, postId]
+    );
+    if (!rows[0]) throw httpError('Post topilmadi', 404);
+    return rows[0];
+}
 
 // ---------- Yangi post yaratish ----------
 // mediaItems: [{ mediaUrl, mediaType, thumbnailUrl?, duration? }, ...] — kamida 1 ta.
 // posts.media_url/media_type/thumbnail_url/duration ustunlariga BIRINCHI element
 // nusxa sifatida yoziladi (tezkor ko'rsatish uchun), barcha elementlar esa
 // post_media jadvaliga (carousel uchun) yoziladi.
-async function createPost(userId, { mediaItems, caption }) {
+// settings: { visibility, commentsEnabled, hideLikeCount, allowDownloads } —
+// berilmaganlari standart (hammaga ochiq, izohlar yoqilgan, layklar ko'rinadi,
+// yuklab olish mumkin).
+async function createPost(userId, { mediaItems, caption, settings = {} }) {
     if (!Array.isArray(mediaItems) || mediaItems.length === 0) {
         throw httpError('Kamida bitta video yoki rasm kerak', 400);
     }
@@ -29,8 +48,9 @@ async function createPost(userId, { mediaItems, caption }) {
 
         const first = mediaItems[0];
         const { rows } = await client.query(
-            `INSERT INTO posts (user_id, media_url, media_type, caption, thumbnail_url, duration)
-             VALUES ($1, $2, $3, $4, $5, $6)
+            `INSERT INTO posts (user_id, media_url, media_type, caption, thumbnail_url, duration,
+                                visibility, comments_enabled, hide_like_count, allow_downloads)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              RETURNING ${POST_FIELDS}`,
             [
                 userId,
@@ -39,6 +59,10 @@ async function createPost(userId, { mediaItems, caption }) {
                 caption || null,
                 first.thumbnailUrl || null,
                 first.duration || null,
+                settings.visibility || 'public',
+                settings.commentsEnabled ?? true,
+                settings.hideLikeCount ?? false,
+                settings.allowDownloads ?? true,
             ]
         );
         const post = rows[0];
@@ -68,11 +92,16 @@ async function createPost(userId, { mediaItems, caption }) {
 // shaklda qaytadi. $1 — so'rov yuborayotgan foydalanuvchi (viewer): u layk
 // bosganmi, repost qilganmi (va qanday fikr qoldirgan), saqlaganmi,
 // muallifni kuzatadimi. `extraColumns` / `extraJoins` — repost/saqlanganlar
-// ro'yxatlari uchun (masalan qachon repost qilingani).
+// ro'yxatlari uchun (masalan qachon repost qilingani). Layklar soni
+// yashirilgan bo'lsa — faqat muallifga ko'rinadi (boshqalarga 0).
 function postSelectSql({ extraColumns = '', extraJoins = '' } = {}) {
     return `
         SELECT p.id, p.user_id, p.media_url, p.media_type, p.caption, p.thumbnail_url,
-               p.duration, p.views_count, p.likes_count, p.comments_count, p.reposts_count,
+               p.duration, p.views_count,
+               CASE WHEN p.hide_like_count AND p.user_id IS DISTINCT FROM $1 THEN 0
+                    ELSE p.likes_count END AS likes_count,
+               p.comments_count, p.reposts_count,
+               p.visibility, p.comments_enabled, p.hide_like_count, p.allow_downloads, p.edited_at,
                p.created_at, u.username, u.avatar_url,
                EXISTS(
                    SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = $1
@@ -112,7 +141,7 @@ async function getForYouFeed({ viewerId, sessionId, limit } = {}) {
     if (!ids.length) return [];
 
     const { rows } = await pool.query(
-        `${postSelectSql()} WHERE p.id = ANY($2::uuid[])`,
+        `${postSelectSql()} WHERE p.id = ANY($2::uuid[]) AND ${visibleToViewerSql('$1')}`,
         [viewerId, ids]
     );
     const byId = new Map(rows.map((r) => [r.id, r]));
@@ -126,7 +155,8 @@ async function getFollowingFeed({ viewerId, limit, cursor } = {}) {
     const params = [viewerId];
     // Bloklangan (is_active = false) foydalanuvchining postlari lentaga chiqmaydi
     let where = `WHERE u.is_active = true
-                   AND p.user_id IN (SELECT following_id FROM follows WHERE follower_id = $1)`;
+                   AND p.user_id IN (SELECT following_id FROM follows WHERE follower_id = $1)
+                   AND ${visibleToViewerSql('$1')}`;
     if (cursor) {
         params.push(cursor);
         where += ` AND p.created_at < $${params.length}`;
@@ -147,7 +177,7 @@ async function getFollowingFeed({ viewerId, limit, cursor } = {}) {
 async function getUserPosts({ userId, mediaType, limit, cursor, viewerId } = {}) {
     const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 21, 1), 60);
     const params = [viewerId || null, userId];
-    let where = 'WHERE p.user_id = $2';
+    let where = `WHERE p.user_id = $2 AND ${visibleToViewerSql('$1')}`;
     if (mediaType) {
         params.push(mediaType);
         where += ` AND p.media_type = $${params.length}`;
@@ -171,7 +201,7 @@ async function getUserPosts({ userId, mediaType, limit, cursor, viewerId } = {})
 // ---------- Bitta post (masalan chatda yuborilgan postni ochganda) ----------
 async function getPostById(postId, viewerId) {
     const { rows } = await pool.query(
-        `${postSelectSql()} WHERE p.id = $2 AND u.is_active = true`,
+        `${postSelectSql()} WHERE p.id = $2 AND u.is_active = true AND ${visibleToViewerSql('$1')}`,
         [viewerId || null, postId]
     );
     if (!rows[0]) throw httpError('Post topilmadi', 404);
@@ -185,7 +215,7 @@ async function getPostById(postId, viewerId) {
 async function getUserReposts({ userId, limit, cursor, viewerId } = {}) {
     const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 21, 1), 60);
     const params = [viewerId || null, userId];
-    let where = 'WHERE u.is_active = true';
+    let where = `WHERE u.is_active = true AND ${visibleToViewerSql('$1')}`;
     if (cursor) {
         params.push(cursor);
         where += ` AND rp.created_at < $${params.length}`;
@@ -214,7 +244,7 @@ async function getUserReposts({ userId, limit, cursor, viewerId } = {}) {
 async function getSavedPosts({ viewerId, limit, cursor } = {}) {
     const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 21, 1), 60);
     const params = [viewerId];
-    let where = 'WHERE u.is_active = true';
+    let where = `WHERE u.is_active = true AND ${visibleToViewerSql('$1')}`;
     if (cursor) {
         params.push(cursor);
         where += ` AND sp.created_at < $${params.length}`;
@@ -248,8 +278,15 @@ async function setRepost(userId, postId, reposted, thought) {
     try {
         await client.query('BEGIN');
 
-        const post = await client.query('SELECT 1 FROM posts WHERE id = $1 FOR UPDATE', [postId]);
-        if (!post.rows[0]) throw httpError('Post topilmadi', 404);
+        if (reposted) {
+            // Faqat hammaga ochiq postni repost qilish mumkin (aks holda
+            // yopiq post profil orqali boshqalarga ko'rinib qolardi).
+            const post = await loadVisiblePost(client, postId, userId, { forUpdate: true });
+            if (post.visibility !== 'public') throw httpError('Bu postni repost qilib bo\'lmaydi', 403);
+        } else {
+            const post = await client.query('SELECT 1 FROM posts WHERE id = $1 FOR UPDATE', [postId]);
+            if (!post.rows[0]) throw httpError('Post topilmadi', 404);
+        }
 
         let changed;
         if (!reposted) {
@@ -301,8 +338,12 @@ async function setRepost(userId, postId, reposted, thought) {
 
 // ---------- Saqlash / saqlanganlardan olib tashlash (idempotent) ----------
 async function setSaved(userId, postId, saved) {
-    const post = await pool.query('SELECT 1 FROM posts WHERE id = $1', [postId]);
-    if (!post.rows[0]) throw httpError('Post topilmadi', 404);
+    if (saved) {
+        await loadVisiblePost(pool, postId, userId);
+    } else {
+        const post = await pool.query('SELECT 1 FROM posts WHERE id = $1', [postId]);
+        if (!post.rows[0]) throw httpError('Post topilmadi', 404);
+    }
 
     const changed = saved
         ? await pool.query(
@@ -319,11 +360,7 @@ async function setSaved(userId, postId, saved) {
 // turidagi xabar yoziladi. Avval HAMMA oluvchi tekshiriladi — biri topilmasa
 // hech kimga yuborilmaydi (yarim-yuborilgan holat qolmasin).
 async function sendPostToUsers(senderId, postId, userIds, content) {
-    const post = await pool.query(
-        'SELECT 1 FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = $1 AND u.is_active = true',
-        [postId]
-    );
-    if (!post.rows[0]) throw httpError('Post topilmadi', 404);
+    await loadVisiblePost(pool, postId, senderId);
 
     const targets = [...new Set(userIds.map((id) => String(id).toLowerCase()))]
         .filter((id) => id !== senderId);
@@ -355,8 +392,7 @@ async function likePost(userId, postId) {
     try {
         await client.query('BEGIN');
 
-        const post = await client.query('SELECT id FROM posts WHERE id = $1 FOR UPDATE', [postId]);
-        if (!post.rows[0]) throw httpError('Post topilmadi', 404);
+        await loadVisiblePost(client, postId, userId, { forUpdate: true });
 
         try {
             await client.query('INSERT INTO likes (post_id, user_id) VALUES ($1, $2)', [postId, userId]);
@@ -429,8 +465,8 @@ async function addComment(userId, postId, content, parentId) {
     try {
         await client.query('BEGIN');
 
-        const post = await client.query('SELECT id FROM posts WHERE id = $1', [postId]);
-        if (!post.rows[0]) throw httpError('Post topilmadi', 404);
+        const post = await loadVisiblePost(client, postId, userId);
+        if (!post.comments_enabled) throw httpError('Bu postda izohlar o\'chirilgan', 403);
 
         let rootId = null;
         if (parentId) {
@@ -477,6 +513,10 @@ async function addComment(userId, postId, content, parentId) {
 // izohga yozilgan javoblar, suhbat tartibida eng eskisidan boshlab
 // (cursor = ro'yxatdagi eng so'nggi javobning vaqti).
 async function listComments(postId, { limit, cursor, parentId, viewerId } = {}) {
+    const post = await loadVisiblePost(pool, postId, viewerId);
+    // Izohlar o'chirilgan bo'lsa — mavjudlari faqat muallifga ko'rinadi
+    if (!post.comments_enabled && post.user_id !== viewerId) return [];
+
     const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 50);
     const params = [viewerId || null, postId];
     let where = 'WHERE c.post_id = $2';
@@ -518,6 +558,7 @@ async function setCommentLike(userId, postId, commentId, liked) {
     try {
         await client.query('BEGIN');
 
+        await loadVisiblePost(client, postId, userId);
         const comment = await client.query(
             'SELECT id FROM comments WHERE id = $1 AND post_id = $2 FOR UPDATE',
             [commentId, postId]
@@ -550,8 +591,83 @@ async function setCommentLike(userId, postId, commentId, liked) {
     }
 }
 
+// ---------- Postni tahrirlash (faqat muallif): caption va sozlamalar ----------
+// changes: { caption?, visibility?, commentsEnabled?, hideLikeCount?, allowDownloads? }
+// — berilganlari o'zgaradi. Caption o'zgarsa, post mavzulari qayta ajratiladi.
+async function updatePost(userId, postId, changes) {
+    const columns = {
+        caption: 'caption',
+        visibility: 'visibility',
+        commentsEnabled: 'comments_enabled',
+        hideLikeCount: 'hide_like_count',
+        allowDownloads: 'allow_downloads',
+    };
+    const sets = [];
+    const params = [postId];
+    for (const [key, column] of Object.entries(columns)) {
+        if (changes[key] === undefined) continue;
+        let value = changes[key];
+        if (key === 'caption') value = value == null ? null : String(value).trim() || null;
+        params.push(value);
+        sets.push(`${column} = $${params.length}`);
+    }
+    if (!sets.length) throw httpError('O\'zgartirish uchun hech narsa berilmadi', 400);
+
+    const owner = await pool.query('SELECT user_id FROM posts WHERE id = $1', [postId]);
+    if (!owner.rows[0]) throw httpError('Post topilmadi', 404);
+    if (owner.rows[0].user_id !== userId) throw httpError('Faqat o\'z postingizni o\'zgartira olasiz', 403);
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const { rows } = await client.query(
+            `UPDATE posts SET ${sets.join(', ')}, edited_at = NOW() WHERE id = $1 RETURNING caption`,
+            params
+        );
+        if (changes.caption !== undefined) await tagPost(client, postId, rows[0].caption);
+        await client.query('COMMIT');
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
+    return getPostById(postId, userId);
+}
+
+// ---------- Heshteg takliflari (caption yozilayotganda) ----------
+// q — "#coo" / "coo" kabi boshlanishi; bo'sh bo'lsa — so'nggi 30 kundagi
+// ommabop heshteglar. Faqat hammaga ochiq postlar hisoblanadi.
+async function suggestTags({ q, limit } = {}) {
+    const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 20);
+    const prefix = normalizeKey(String(q || '').replace(/^#+/, '').trim());
+    const params = [safeLimit];
+    let where = "pt.weight >= 1 AND p.visibility = 'public' AND u.is_active = true";
+    if (prefix) {
+        // LIKE'dagi maxsus belgilar (_ va %) oddiy belgi sifatida qidirilsin
+        params.push(prefix.replace(/[\\%_]/g, '\\$&') + '%');
+        where += ` AND pt.tag LIKE $${params.length}`;
+    } else {
+        where += " AND p.created_at > NOW() - INTERVAL '30 days'";
+    }
+    const { rows } = await pool.query(
+        `SELECT pt.tag, COUNT(*)::int AS posts_count
+         FROM post_tags pt
+         JOIN posts p ON p.id = pt.post_id
+         JOIN users u ON u.id = p.user_id
+         WHERE ${where}
+         GROUP BY pt.tag
+         ORDER BY posts_count DESC, pt.tag
+         LIMIT $1`,
+        params
+    );
+    return rows;
+}
+
 module.exports = {
     createPost,
+    updatePost,
+    suggestTags,
     getForYouFeed,
     getFollowingFeed,
     getUserPosts,

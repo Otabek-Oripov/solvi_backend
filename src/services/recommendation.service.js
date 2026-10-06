@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { visibleToViewerSql } = require('../utils/postVisibility');
 
 // =====================================================================
 // "Siz uchun" lentasi — TikTok / Instagram Reels / YouTube Shorts
@@ -245,8 +246,9 @@ async function recordViews(userId, events) {
 
     const ids = [...new Set(list.map((e) => e.postId))];
     const { rows } = await pool.query(
-        'SELECT id, user_id, media_type, duration FROM posts WHERE id = ANY($1::uuid[])',
-        [ids]
+        `SELECT p.id, p.user_id, p.media_type, p.duration FROM posts p
+         WHERE p.id = ANY($1::uuid[]) AND ${visibleToViewerSql('$2')}`,
+        [ids, me]
     );
     const postOf = new Map(rows.map((p) => [p.id, p]));
 
@@ -406,6 +408,8 @@ LEFT JOIN author_interest ai ON ai.author_id = p.user_id
 LEFT JOIN co_liked co ON co.post_id = p.id
 LEFT JOIN post_views pv ON pv.post_id = p.id AND pv.user_id = $1
 WHERE p.id NOT IN (SELECT post_id FROM served)
+  -- Kim ko'ra oladi: hamma / kuzatuvchilar (f — viewer muallifni kuzatadi) / faqat muallif
+  AND (p.visibility = 'public' OR p.user_id = $1 OR (p.visibility = 'followers' AND f.following_id IS NOT NULL))
 ORDER BY score DESC
 LIMIT $3
 `;
@@ -463,6 +467,7 @@ async function purgeRecommendationData() {
 module.exports = {
     SIGNAL_WEIGHTS,
     extractPostTags,
+    normalizeKey,
     tagPost,
     tagUntaggedPosts,
     addInterests,

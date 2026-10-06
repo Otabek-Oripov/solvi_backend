@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { recordFollowSignal } = require('./recommendation.service');
+const { visibleToViewerSql } = require('../utils/postVisibility');
 const { buildFilterClause } = require('./matching.service');
 
 // Flutter'ga qaytariladigan xavfsiz ustunlar (password_hash hech qachon emas).
@@ -39,8 +40,8 @@ async function attachExtras(user, viewerId) {
         `SELECT
             (SELECT COUNT(*) FROM follows WHERE following_id = $1) AS followers_count,
             (SELECT COUNT(*) FROM follows WHERE follower_id = $1) AS following_count,
-            (SELECT COUNT(*) FROM posts WHERE user_id = $1) AS posts_count`,
-        [user.id]
+            (SELECT COUNT(*) FROM posts p WHERE p.user_id = $1 AND ${visibleToViewerSql('$2')}) AS posts_count`,
+        [user.id, viewerId || null]
     );
 
     let isFollowing = false;

@@ -109,12 +109,17 @@ async function createStory(userId, { upload, postId, overlays, durationMs, expir
     let media;
     if (postId) {
         const { rows } = await pool.query(
-            `SELECT p.media_url, p.media_type, p.thumbnail_url, p.duration
+            `SELECT p.media_url, p.media_type, p.thumbnail_url, p.duration, p.visibility
              FROM posts p JOIN users u ON u.id = p.user_id
              WHERE p.id = $1 AND u.is_active = true`,
             [postId]
         );
         if (!rows[0]) throw httpError('Post topilmadi', 404);
+        // Story'ni hamma ko'radi — yopiq (kuzatuvchilar / faqat men) post
+        // u orqali boshqalarga ko'rinib qolmasin.
+        if (rows[0].visibility !== 'public') {
+            throw httpError('Bu postni story\'ga qo\'shib bo\'lmaydi', 403);
+        }
         media = {
             mediaUrl: rows[0].media_url,
             mediaType: rows[0].media_type,

@@ -3,8 +3,17 @@ const { body, param, query, validationResult } = require('express-validator');
 const controller = require('../controllers/posts.controller');
 const { requireAuth } = require('../middlewares/auth.middleware');
 const { uploadPost, cleanupUploadsOnError } = require('../middlewares/upload.middleware');
+const { VISIBILITIES } = require('../utils/postVisibility');
 
 const router = express.Router();
+
+// Post sozlamalari (yaratishda — multipart satrlar, tahrirlashda — JSON)
+const settingsChecks = [
+    body('visibility').optional({ values: 'falsy' }).isIn(VISIBILITIES).withMessage('visibility noto\'g\'ri'),
+    body('commentsEnabled').optional({ values: 'null' }).isBoolean().withMessage('commentsEnabled noto\'g\'ri'),
+    body('hideLikeCount').optional({ values: 'null' }).isBoolean().withMessage('hideLikeCount noto\'g\'ri'),
+    body('allowDownloads').optional({ values: 'null' }).isBoolean().withMessage('allowDownloads noto\'g\'ri'),
+];
 
 function validate(req, res, next) {
     const errors = validationResult(req);
@@ -25,9 +34,37 @@ router.post(
     [
         body('caption').optional({ nullable: true }).isLength({ max: 500 }).withMessage('Caption 500 belgidan oshmasin'),
         body('duration').optional({ nullable: true }).isInt({ min: 0, max: 600 }).withMessage('Video davomiyligi noto\'g\'ri'),
+        ...settingsChecks,
+        body('shareToStory').optional({ values: 'falsy' }).isBoolean().withMessage('shareToStory noto\'g\'ri'),
     ],
     validate,
     controller.create
+);
+
+// Heshteg takliflari. Diqqat: `/:id` dan OLDIN bo'lishi shart.
+router.get(
+    '/tags',
+    requireAuth,
+    [
+        query('q').optional({ values: 'falsy' }).isString().isLength({ max: 60 }).withMessage('q juda uzun'),
+        query('limit').optional().isInt({ min: 1, max: 20 }).withMessage('limit noto\'g\'ri'),
+    ],
+    validate,
+    controller.tags
+);
+
+// Caption va sozlamalarni o'zgartirish (faqat muallif)
+router.patch(
+    '/:id',
+    requireAuth,
+    [
+        param('id').isUUID().withMessage('ID noto\'g\'ri'),
+        body('caption').optional({ nullable: true }).isString().withMessage('Caption matn bo\'lishi kerak')
+            .isLength({ max: 500 }).withMessage('Caption 500 belgidan oshmasin'),
+        ...settingsChecks,
+    ],
+    validate,
+    controller.update
 );
 
 router.get(

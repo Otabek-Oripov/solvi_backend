@@ -126,7 +126,16 @@ CREATE TABLE IF NOT EXISTS posts (
     reposts_count   INTEGER NOT NULL DEFAULT 0,
     -- post_tags qaysi qoidalar versiyasi bilan ajratilgani (0 — hali ajratilmagan)
     tags_version    SMALLINT NOT NULL DEFAULT 0,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    -- Sozlamalar: kim ko'ra oladi (hamma / kuzatuvchilar / faqat muallif),
+    -- izohlar, layklar sonini yashirish, yuklab olishga ruxsat
+    visibility       VARCHAR(10) NOT NULL DEFAULT 'public',
+    comments_enabled BOOLEAN NOT NULL DEFAULT true,
+    hide_like_count  BOOLEAN NOT NULL DEFAULT false,
+    allow_downloads  BOOLEAN NOT NULL DEFAULT true,
+    edited_at        TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT chk_posts_visibility CHECK (visibility IN ('public', 'followers', 'private'))
 );
 
 -- Postni (o'zinikini ham) o'z profiliga "repost" qilish (hammaga ochiq).
@@ -380,6 +389,7 @@ CREATE INDEX IF NOT EXISTS idx_stories_expires ON stories(expires_at);
 CREATE INDEX IF NOT EXISTS idx_story_views_viewer ON story_views(viewer_id);
 CREATE INDEX IF NOT EXISTS idx_post_media_post_id ON post_media(post_id);
 CREATE INDEX IF NOT EXISTS idx_post_tags_tag ON post_tags(tag);
+CREATE INDEX IF NOT EXISTS idx_post_tags_tag_prefix ON post_tags(tag text_pattern_ops);
 CREATE INDEX IF NOT EXISTS idx_post_views_user ON post_views(user_id, last_viewed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_user_interests_top ON user_interests(user_id, kind, score DESC);
 CREATE INDEX IF NOT EXISTS idx_feed_impressions_served ON feed_impressions(served_at);

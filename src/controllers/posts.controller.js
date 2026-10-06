@@ -1,12 +1,17 @@
 const crypto = require('crypto');
 const postsService = require('../services/posts.service');
 const { recordViews } = require('../services/recommendation.service');
+const storiesService = require('../services/stories.service');
+const { parseBool } = require('../utils/postVisibility');
 const { emitToParticipants } = require('../realtime/socket');
 const { handleError } = require('../utils/http');
 const { publicPath } = require('../middlewares/upload.middleware');
 
 // POST /posts — yangi video yoki rasm(lar) (carousel) yuklash.
 // Yoki "video" (+ ixtiyoriy "thumbnail"), yoki "photos" (1-10 ta) kelishi kerak.
+// Sozlamalar (ixtiyoriy): visibility, commentsEnabled, hideLikeCount,
+// allowDownloads; shareToStory — post darhol story'ga ham qo'yiladi
+// (faqat hammaga ochiq post).
 async function create(req, res) {
     try {
         const videoFile = req.files?.video?.[0];
@@ -35,9 +40,26 @@ async function create(req, res) {
         const post = await postsService.createPost(req.userId, {
             mediaItems,
             caption: req.body.caption,
+            settings: {
+                visibility: req.body.visibility,
+                commentsEnabled: parseBool(req.body.commentsEnabled),
+                hideLikeCount: parseBool(req.body.hideLikeCount),
+                allowDownloads: parseBool(req.body.allowDownloads),
+            },
         });
 
-        res.status(201).json({ post });
+        // Story'ga ham — muvaffaqiyatsiz bo'lsa ham post joylangan bo'lib qoladi.
+        let story = null;
+        if (parseBool(req.body.shareToStory) && post.visibility === 'public') {
+            story = await storiesService
+                .createStory(req.userId, { postId: post.id, overlays: [] })
+                .catch((err) => {
+                    console.error('Postni story\'ga qo\'yib bo\'lmadi:', err.message);
+                    return null;
+                });
+        }
+
+        res.status(201).json({ post, story });
     } catch (err) {
         handleError(res, err);
     }
@@ -78,6 +100,32 @@ async function getFeed(req, res) {
 async function views(req, res) {
     try {
         res.json(await recordViews(req.userId, req.body.events));
+    } catch (err) {
+        handleError(res, err);
+    }
+}
+
+// PATCH /posts/:id — caption va sozlamalarni o'zgartirish (faqat muallif)
+async function update(req, res) {
+    try {
+        const post = await postsService.updatePost(req.userId, req.params.id, {
+            caption: req.body.caption,
+            visibility: req.body.visibility || undefined,
+            commentsEnabled: parseBool(req.body.commentsEnabled),
+            hideLikeCount: parseBool(req.body.hideLikeCount),
+            allowDownloads: parseBool(req.body.allowDownloads),
+        });
+        res.json({ post });
+    } catch (err) {
+        handleError(res, err);
+    }
+}
+
+// GET /posts/tags?q= — caption yozilayotganda heshteg takliflari
+async function tags(req, res) {
+    try {
+        const rows = await postsService.suggestTags({ q: req.query.q, limit: req.query.limit });
+        res.json({ tags: rows.map((r) => ({ tag: r.tag, postsCount: r.posts_count })) });
     } catch (err) {
         handleError(res, err);
     }
@@ -258,6 +306,8 @@ module.exports = {
     create,
     getFeed,
     views,
+    update,
+    tags,
     getUserPosts,
     getPost,
     getUserReposts,
