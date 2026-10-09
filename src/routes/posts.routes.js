@@ -71,7 +71,7 @@ router.get(
     '/feed',
     requireAuth,
     [
-        query('mode').optional().isIn(['for_you', 'following']).withMessage('mode noto\'g\'ri'),
+        query('mode').optional().isIn(['for_you', 'following', 'followers', 'commented']).withMessage('mode noto\'g\'ri'),
         query('session').optional({ values: 'falsy' }).isUUID().withMessage('session noto\'g\'ri'),
         query('limit').optional().isInt({ min: 1, max: 30 }).withMessage('limit noto\'g\'ri'),
         query('cursor').optional({ values: 'falsy' }).isISO8601().withMessage('cursor noto\'g\'ri'),

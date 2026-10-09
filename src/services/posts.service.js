@@ -173,6 +173,67 @@ async function getFollowingFeed({ viewerId, limit, cursor } = {}) {
     return rows;
 }
 
+// ---------- "Kuzatuvchilar" lentasi — meni kuzatadigan, lekin men kuzatmaydigan
+// odamlarning postlari, eng yangisidan (cursor — oxirgi postning created_at'i) ----------
+async function getFollowersFeed({ viewerId, limit, cursor } = {}) {
+    const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 30);
+    const params = [viewerId];
+    let where = `WHERE u.is_active = true
+                   AND p.user_id IN (
+                       SELECT f.follower_id FROM follows f
+                       WHERE f.following_id = $1
+                         AND NOT EXISTS (
+                             SELECT 1 FROM follows back
+                             WHERE back.follower_id = $1 AND back.following_id = f.follower_id
+                         )
+                   )
+                   AND ${visibleToViewerSql('$1')}`;
+    if (cursor) {
+        params.push(cursor);
+        where += ` AND p.created_at < $${params.length}`;
+    }
+    params.push(safeLimit);
+
+    const { rows } = await pool.query(
+        `${postSelectSql()}
+         ${where}
+         ORDER BY p.created_at DESC
+         LIMIT $${params.length}`,
+        params
+    );
+    return rows;
+}
+
+// ---------- "Izohlaganlarim" lentasi — men izoh (yoki javob) yozgan postlar,
+// oxirgi izohim vaqti bo'yicha eng yangisidan. activity_at — oxirgi izohim
+// vaqti (keyingi sahifa cursor'i shu). ----------
+async function getCommentedFeed({ viewerId, limit, cursor } = {}) {
+    const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 30);
+    const params = [viewerId];
+    let where = `WHERE u.is_active = true AND ${visibleToViewerSql('$1')}`;
+    if (cursor) {
+        params.push(cursor);
+        where += ` AND mc.last_commented_at < $${params.length}`;
+    }
+    params.push(safeLimit);
+
+    const { rows } = await pool.query(
+        `${postSelectSql({
+            extraColumns: ', mc.last_commented_at AS activity_at',
+            extraJoins: `JOIN (
+                             SELECT post_id, MAX(created_at) AS last_commented_at
+                             FROM comments WHERE user_id = $1
+                             GROUP BY post_id
+                         ) mc ON mc.post_id = p.id`,
+        })}
+         ${where}
+         ORDER BY mc.last_commented_at DESC
+         LIMIT $${params.length}`,
+        params
+    );
+    return rows;
+}
+
 // ---------- Bitta foydalanuvchining postlari (profil ekrani: Video/Rasm tablari) ----------
 async function getUserPosts({ userId, mediaType, limit, cursor, viewerId } = {}) {
     const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 21, 1), 60);
@@ -670,6 +731,8 @@ module.exports = {
     suggestTags,
     getForYouFeed,
     getFollowingFeed,
+    getFollowersFeed,
+    getCommentedFeed,
     getUserPosts,
     getPostById,
     getUserReposts,

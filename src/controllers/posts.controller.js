@@ -65,21 +65,31 @@ async function create(req, res) {
     }
 }
 
-// GET /posts/feed?mode=for_you|following — lenta.
+// GET /posts/feed?mode=for_you|following|followers|commented — lenta.
 //  - for_you (standart): tavsiya lentasi; session — lenta ochilishi
 //    identifikatori (berilmasa server yangisini yaratadi va javobda
 //    qaytaradi). Keyingi sahifalar shu session bilan so'raladi — ko'rsatilgan
 //    postlar takrorlanmaydi.
 //  - following: faqat kuzatilayotganlar postlari, eng yangisidan (cursor).
+//  - followers: meni kuzatadigan, lekin men kuzatmaydiganlar postlari (cursor).
+//  - commented: men izoh yozgan postlar, oxirgi izohim bo'yicha (cursor —
+//    postning activity_at'i).
+const CURSOR_FEEDS = {
+    following: (q) => postsService.getFollowingFeed(q),
+    followers: (q) => postsService.getFollowersFeed(q),
+    commented: (q) => postsService.getCommentedFeed(q),
+};
+
 async function getFeed(req, res) {
     try {
-        if (req.query.mode === 'following') {
-            const posts = await postsService.getFollowingFeed({
+        const cursorFeed = CURSOR_FEEDS[req.query.mode];
+        if (cursorFeed) {
+            const posts = await cursorFeed({
                 viewerId: req.userId,
                 limit: req.query.limit,
                 cursor: req.query.cursor,
             });
-            return res.json({ posts, mode: 'following' });
+            return res.json({ posts, mode: req.query.mode });
         }
 
         const session = req.query.session || crypto.randomUUID();
