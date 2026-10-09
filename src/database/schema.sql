@@ -278,6 +278,51 @@ CREATE TABLE IF NOT EXISTS story_views (
     PRIMARY KEY (story_id, viewer_id)
 );
 
+-- Stiker to'plamlari (Telegram uslubida). To'plam ochiq: kimdir chatda shu
+-- to'plamdagi stikerni olsa, uni bosib butun to'plamni o'ziga qo'sha oladi.
+CREATE TABLE IF NOT EXISTS sticker_packs (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    owner_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title      VARCHAR(64) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- To'plam ichidagi stikerlar: PNG/WEBP — oddiy, GIF — animatsion; emoji —
+-- stikerning "ma'nosi" (chatda shu emoji yozilganda taklif qilinadi).
+CREATE TABLE IF NOT EXISTS stickers (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    pack_id     UUID NOT NULL REFERENCES sticker_packs(id) ON DELETE CASCADE,
+    media_url   TEXT NOT NULL,
+    is_animated BOOLEAN NOT NULL DEFAULT false,
+    emoji       VARCHAR(16),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Foydalanuvchi o'z paneliga qo'shgan to'plamlar (o'zi yaratganlari ham)
+CREATE TABLE IF NOT EXISTS user_sticker_packs (
+    user_id  UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    pack_id  UUID NOT NULL REFERENCES sticker_packs(id) ON DELETE CASCADE,
+    added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (user_id, pack_id)
+);
+
+-- "Saqlangan GIFlar": tashqi manbadan (KLIPY/GIPHY) saqlanganlari va
+-- foydalanuvchining o'zi yasaganlari (is_own — fayl bizning serverda).
+CREATE TABLE IF NOT EXISTS saved_gifs (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    url         TEXT NOT NULL,
+    preview_url TEXT,
+    width       INTEGER,
+    height      INTEGER,
+    is_own      BOOLEAN NOT NULL DEFAULT false,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_saved_gifs_user_url UNIQUE (user_id, url)
+);
+
 -- direct_key — 1:1 suhbatda "<kichik user id>:<katta user id>". UNIQUE
 -- bo'lgani uchun bir juftlik orasida faqat bitta suhbat bo'la oladi
 -- (guruh suhbatlarida NULL).
@@ -303,7 +348,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content                 TEXT NOT NULL,
     media_url               TEXT,
     type                    VARCHAR(10) NOT NULL DEFAULT 'text'
-                            CONSTRAINT chk_messages_type CHECK (type IN ('text', 'image', 'video', 'voice', 'gif', 'post')),
+                            CONSTRAINT chk_messages_type CHECK (type IN ('text', 'image', 'video', 'voice', 'gif', 'post', 'sticker')),
     status                  VARCHAR(10) NOT NULL DEFAULT 'sent' CHECK (status IN ('sent', 'delivered', 'read')),
     reply_to_id             UUID REFERENCES messages(id) ON DELETE SET NULL,
     is_pinned               BOOLEAN NOT NULL DEFAULT false,
@@ -318,6 +363,9 @@ CREATE TABLE IF NOT EXISTS messages (
     shared_post_id          UUID REFERENCES posts(id) ON DELETE SET NULL,
     -- story'ga javob sifatida yozilgan xabar (story o'chsa NULL)
     story_id                UUID REFERENCES stories(id) ON DELETE SET NULL,
+    -- type = 'sticker' — qaysi stiker yuborilgani (to'plamni ochish uchun;
+    -- stiker o'chirilsa NULL, rasmi esa media_url'da qoladi)
+    sticker_id              UUID REFERENCES stickers(id) ON DELETE SET NULL,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -394,12 +442,20 @@ CREATE INDEX IF NOT EXISTS idx_post_views_user ON post_views(user_id, last_viewe
 CREATE INDEX IF NOT EXISTS idx_user_interests_top ON user_interests(user_id, kind, score DESC);
 CREATE INDEX IF NOT EXISTS idx_feed_impressions_served ON feed_impressions(served_at);
 CREATE INDEX IF NOT EXISTS idx_posts_user_created ON posts(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sticker_packs_owner ON sticker_packs(owner_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_stickers_pack ON stickers(pack_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_stickers_media_url ON stickers(media_url);
+CREATE INDEX IF NOT EXISTS idx_user_sticker_packs_pack ON user_sticker_packs(pack_id);
+CREATE INDEX IF NOT EXISTS idx_saved_gifs_user ON saved_gifs(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_saved_gifs_url ON saved_gifs(url);
 CREATE INDEX IF NOT EXISTS idx_conversation_participants_user ON conversation_participants(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_created   ON messages(conversation_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_sender    ON messages(conversation_id, sender_id, status);
 CREATE INDEX IF NOT EXISTS idx_messages_reply_to    ON messages(reply_to_id);
 CREATE INDEX IF NOT EXISTS idx_messages_pinned      ON messages(conversation_id, is_pinned) WHERE is_pinned = true;
 CREATE INDEX IF NOT EXISTS idx_messages_group_id    ON messages(group_id) WHERE group_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_messages_sticker     ON messages(sticker_id) WHERE sticker_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_messages_media_url   ON messages(media_url) WHERE media_url IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_message_deletions_user ON message_deletions(user_id);
 CREATE INDEX IF NOT EXISTS idx_message_reactions_message ON message_reactions(message_id);
 CREATE INDEX IF NOT EXISTS idx_swipes_swiper ON swipes(swiper_id);

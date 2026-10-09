@@ -33,6 +33,10 @@ const AUDIO_TYPES = {
     'audio/ogg': '.ogg',
 };
 const ALL_TYPES = { ...IMAGE_TYPES, ...VIDEO_TYPES, ...AUDIO_TYPES };
+// Stiker (oddiy — PNG/WEBP, animatsion — GIF) va foydalanuvchi yasagan GIF.
+const GIF_TYPES = { 'image/gif': '.gif' };
+const STICKER_TYPES = { 'image/png': '.png', 'image/webp': '.webp', ...GIF_TYPES };
+const EXTENSIONS = { ...ALL_TYPES, ...GIF_TYPES };
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, UPLOAD_DIR),
@@ -40,7 +44,7 @@ const storage = multer.diskStorage({
     // ro'yxatidan olinadi — aks holda "rasm" deb .html/.js fayl yuklab,
     // uni /uploads orqali shu domendan tarqatish mumkin bo'lardi.
     filename: (req, file, cb) => {
-        cb(null, `${crypto.randomUUID()}${ALL_TYPES[file.mimetype] || '.bin'}`);
+        cb(null, `${crypto.randomUUID()}${EXTENSIONS[file.mimetype] || '.bin'}`);
     },
 });
 
@@ -116,6 +120,30 @@ const uploadStory = multer({
     { name: 'thumbnail', maxCount: 1 },
 ]);
 
+// Stiker to'plamiga qo'shiladigan bitta stiker (field nomi "file").
+const uploadStickerFile = multer({
+    storage,
+    fileFilter: (req, file, cb) => {
+        if (!STICKER_TYPES[file.mimetype]) {
+            return cb(Object.assign(new Error('Stiker PNG, WEBP yoki GIF bo\'lishi kerak'), { status: 400 }));
+        }
+        cb(null, true);
+    },
+    limits: { fileSize: 3 * 1024 * 1024 }, // 3 MB
+}).single('file');
+
+// Foydalanuvchi o'zi yasagan GIF (field nomi "file").
+const uploadGifFile = multer({
+    storage,
+    fileFilter: (req, file, cb) => {
+        if (!GIF_TYPES[file.mimetype]) {
+            return cb(Object.assign(new Error('Faqat GIF yuklash mumkin'), { status: 400 }));
+        }
+        cb(null, true);
+    },
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+}).single('file');
+
 // Bazaga to'liq URL emas, shu NISBIY yo'l yoziladi. Host (IP/domen)
 // o'zgarganda eski yozuvlar buzilmaydi — klient o'zining base URL'ini
 // oldiga qo'shib oladi.
@@ -152,6 +180,8 @@ module.exports = {
     uploadPost,
     uploadChatMedia,
     uploadStory,
+    uploadStickerFile,
+    uploadGifFile,
     publicPath,
     cleanupUploadsOnError,
     removeUploadedFile,

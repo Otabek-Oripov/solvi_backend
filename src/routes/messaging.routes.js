@@ -62,9 +62,11 @@ router.post(
         // Rasm/video xabarida content bo'sh bo'lishi mumkin (izoh ixtiyoriy) —
         // bo'sh-yoki-mediasiz holat xizmat qatlamida tekshiriladi.
         body('content').optional({ values: 'falsy' }).trim().isLength({ max: 2000 }).withMessage('Xabar juda uzun'),
-        // GIF kabi tashqi manbadan tayyor havola bilan yuborilganda (fayl yo'q).
-        body('mediaUrl').optional({ values: 'falsy' }).isURL().withMessage('mediaUrl noto\'g\'ri'),
-        body('type').optional({ values: 'falsy' }).isIn(['image', 'gif']).withMessage('type noto\'g\'ri'),
+        // GIF/stiker kabi tayyor havola bilan yuborilganda (fayl yo'q).
+        body('mediaUrl').optional({ values: 'falsy' }).isURL({ require_tld: false }).withMessage('mediaUrl noto\'g\'ri'),
+        body('type').optional({ values: 'falsy' }).isIn(['image', 'gif', 'sticker']).withMessage('type noto\'g\'ri'),
+        // Foydalanuvchilar yaratgan to'plamdagi stiker (type: 'sticker')
+        body('stickerId').optional({ values: 'falsy' }).isUUID().withMessage('stickerId noto\'g\'ri'),
         body('replyToId').optional({ values: 'falsy' }).isUUID().withMessage('replyToId noto\'g\'ri'),
         // Bir nechta rasm birga tanlab yuborilganda — barchasiga bir xil
         // qiymat beriladi, shunda ular chatda bitta albom sifatida chiqadi.

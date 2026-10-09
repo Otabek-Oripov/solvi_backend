@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const stickersService = require('./stickers.service');
 
 function httpError(message, status) {
     const err = new Error(message);
@@ -37,8 +38,16 @@ const MESSAGE_SELECT_SQL = `
            COALESCE(rx.reactions, '[]'::json) AS reactions,
            m.shared_post_id, spv.shared_post,
            m.story_id, stv.story,
+           m.sticker_id, skv.sticker_pack,
            m.created_at
     FROM messages m
+    -- type = 'sticker': stiker qaysi to'plamdan (bosilganda to'plamni ochib,
+    -- o'ziga qo'shish uchun; stiker/to'plam o'chirilgan bo'lsa NULL)
+    LEFT JOIN LATERAL (
+        SELECT json_build_object('id', sp2.id, 'title', sp2.title) AS sticker_pack
+        FROM stickers sk JOIN sticker_packs sp2 ON sp2.id = sk.pack_id
+        WHERE sk.id = m.sticker_id
+    ) skv ON true
     -- Story'ga javob: story kartochkasi uchun (24 soat o'tgach yoki
     -- o'chirilgach NULL — "Story mavjud emas")
     LEFT JOIN LATERAL (
@@ -241,10 +250,15 @@ async function listMessages(conversationId, userId, { limit, cursor } = {}) {
 // berilmasa — oddiy matnli xabar (content majburiy). replyToId berilsa —
 // shu suhbatdagi mavjud xabarga javob sifatida bog'lanadi. sharedPostId
 // berilsa — ulashilgan post (type 'post'), matn esa ixtiyoriy izoh.
-// storyId — story'ga javob sifatida yozilgan matnli xabar.
-async function sendMessage(conversationId, senderId, content, { mediaUrl, type, replyToId, groupId, durationMs, waveform, sharedPostId, storyId } = {}) {
+// storyId — story'ga javob sifatida yozilgan matnli xabar. stickerId —
+// foydalanuvchilar yaratgan to'plamdagi stiker (rasmi shu yerda olinadi).
+async function sendMessage(conversationId, senderId, content, { mediaUrl, type, replyToId, groupId, durationMs, waveform, sharedPostId, storyId, stickerId } = {}) {
     if (!(await isParticipant(conversationId, senderId))) {
         throw httpError('Bu suhbatga kirish huquqingiz yo\'q', 403);
+    }
+    if (stickerId) {
+        mediaUrl = await stickersService.getStickerMedia(stickerId);
+        type = 'sticker';
     }
     const trimmed = (content || '').trim();
     if (!mediaUrl && !sharedPostId && !trimmed) throw httpError('Xabar bo\'sh bo\'lmasin', 400);
@@ -259,13 +273,13 @@ async function sendMessage(conversationId, senderId, content, { mediaUrl, type, 
     }
 
     const { rows } = await pool.query(
-        `INSERT INTO messages (conversation_id, sender_id, content, media_url, type, status, reply_to_id, group_id, duration_ms, waveform, shared_post_id, story_id)
-         VALUES ($1, $2, $3, $4, $5, 'sent', $6, $7, $8, $9, $10, $11)
+        `INSERT INTO messages (conversation_id, sender_id, content, media_url, type, status, reply_to_id, group_id, duration_ms, waveform, shared_post_id, story_id, sticker_id)
+         VALUES ($1, $2, $3, $4, $5, 'sent', $6, $7, $8, $9, $10, $11, $12)
          RETURNING id`,
         [
             conversationId, senderId, trimmed, mediaUrl || null, type || 'text',
             replyToId || null, groupId || null, durationMs || null, waveform || null,
-            sharedPostId || null, storyId || null,
+            sharedPostId || null, storyId || null, stickerId || null,
         ]
     );
     return fetchMessageById(rows[0].id);
@@ -319,7 +333,7 @@ async function deleteForEveryone(messageId, userId) {
              SELECT media_url FROM messages WHERE id = $1 AND sender_id = $2
          )
          UPDATE messages
-         SET content = '', media_url = NULL, deleted_for_everyone = true, is_pinned = false
+         SET content = '', media_url = NULL, sticker_id = NULL, deleted_for_everyone = true, is_pinned = false
          WHERE id = $1 AND sender_id = $2
          RETURNING id, (SELECT media_url FROM old) AS old_media_url`,
         [messageId, userId]
@@ -329,8 +343,9 @@ async function deleteForEveryone(messageId, userId) {
     let orphanedMediaUrl = null;
     const oldUrl = rows[0].old_media_url;
     if (oldUrl) {
-        const stillUsed = await pool.query('SELECT 1 FROM messages WHERE media_url = $1 LIMIT 1', [oldUrl]);
-        if (!stillUsed.rows[0]) orphanedMediaUrl = oldUrl;
+        // Fayl stiker to'plamida yoki kimningdir "Saqlangan GIFlar"ida ham
+        // bo'lishi mumkin — u holda diskdan o'chirilmaydi.
+        if (!(await stickersService.isMediaReferenced(oldUrl))) orphanedMediaUrl = oldUrl;
     }
     return { message: await fetchMessageById(messageId), orphanedMediaUrl };
 }
@@ -400,7 +415,7 @@ async function getPinnedMessage(conversationId, userId) {
 async function forwardMessage(messageId, targetConversationId, userId) {
     const src = await pool.query(
         `SELECT m.content, m.media_url, m.type, m.duration_ms, m.waveform, m.shared_post_id,
-                u.username AS sender_username
+                m.sticker_id, u.username AS sender_username
          FROM messages m
          JOIN conversation_participants cp ON cp.conversation_id = m.conversation_id AND cp.user_id = $2
          JOIN users u ON u.id = m.sender_id
@@ -418,12 +433,13 @@ async function forwardMessage(messageId, targetConversationId, userId) {
         // shared_post_id — ulashilgan post xabari forward qilinganda.
         `INSERT INTO messages (conversation_id, sender_id, content, media_url, type, status,
                                is_forwarded, forwarded_from_username, duration_ms, waveform,
-                               shared_post_id)
-         VALUES ($1, $2, $3, $4, $5, 'sent', true, $6, $7, $8, $9)
+                               shared_post_id, sticker_id)
+         VALUES ($1, $2, $3, $4, $5, 'sent', true, $6, $7, $8, $9, $10)
          RETURNING id`,
         [
             targetConversationId, userId, source.content, source.media_url, source.type,
             source.sender_username, source.duration_ms, source.waveform, source.shared_post_id,
+            source.sticker_id,
         ]
     );
     return fetchMessageById(rows[0].id);

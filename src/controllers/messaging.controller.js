@@ -2,6 +2,7 @@ const messagingService = require('../services/messaging.service');
 const { emitToParticipants } = require('../realtime/socket');
 const { handleError } = require('../utils/http');
 const { publicPath, removeUploadedFile } = require('../middlewares/upload.middleware');
+const { normalizeMediaUrl } = require('../utils/externalMedia');
 
 // GET /conversations — foydalanuvchining barcha suhbatlari
 async function listConversations(req, res) {
@@ -44,21 +45,26 @@ async function listMessages(req, res) {
 // POST /conversations/:id/messages — REST orqali yuborish. Matnli xabar uchun
 // Socket.io ulanmagan holatlar uchun zaxira yo'l; rasm/video xabar uchun esa
 // bu — YAGONA yo'l (fayl multipart/form-data bilan keladi, "media" maydoni).
-// GIF (masalan Giphy) uchun esa fayl yuklanmaydi — JSON body'da tayyor
-// mediaUrl + type:'gif' keladi. Yuborilgan xabar boshqa ishtirokchiga
-// socket orqali darhol yetkaziladi.
+// GIF/stiker uchun esa fayl yuklanmaydi — JSON body'da tayyor mediaUrl +
+// type:'gif'|'sticker' (KLIPY/GIPHY, animatsion emoji, saqlangan GIF) yoki
+// stickerId (foydalanuvchilar yaratgan to'plamdagi stiker) keladi.
+// Yuborilgan xabar boshqa ishtirokchiga socket orqali darhol yetkaziladi.
 async function sendMessage(req, res) {
     try {
         const file = req.file;
-        let mediaUrl, type;
+        let mediaUrl, type, stickerId;
         if (file) {
             mediaUrl = publicPath(file.filename);
             if (file.mimetype.startsWith('video/')) type = 'video';
             else if (file.mimetype.startsWith('audio/')) type = 'voice';
             else type = 'image';
+        } else if (req.body.type === 'sticker' && req.body.stickerId) {
+            stickerId = req.body.stickerId;
         } else if (req.body.mediaUrl) {
-            mediaUrl = req.body.mediaUrl;
-            type = req.body.type === 'gif' ? 'gif' : 'image';
+            // Faqat ruxsat etilgan manbalar (yoki o'z serverimizdagi fayl)
+            mediaUrl = normalizeMediaUrl(req.body.mediaUrl);
+            if (!mediaUrl) return res.status(400).json({ error: 'Bu havolani yuborib bo\'lmaydi' });
+            type = ['gif', 'sticker'].includes(req.body.type) ? req.body.type : 'image';
         }
 
         const durationMs = req.body.durationMs ? parseInt(req.body.durationMs, 10) : null;
@@ -72,6 +78,7 @@ async function sendMessage(req, res) {
                 groupId: req.body.groupId || null,
                 durationMs: Number.isFinite(durationMs) ? durationMs : null,
                 waveform: req.body.waveform || null,
+                stickerId,
             }
         );
         const io = req.app.get('io');
