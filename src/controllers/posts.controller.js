@@ -6,9 +6,14 @@ const { parseBool } = require('../utils/postVisibility');
 const { emitToParticipants } = require('../realtime/socket');
 const { handleError } = require('../utils/http');
 const { publicPath } = require('../middlewares/upload.middleware');
+const { sanitizeReelEdit } = require('../utils/reelEdit');
+
+const MAX_MUSIC_BYTES = 20 * 1024 * 1024;
 
 // POST /posts — yangi video yoki rasm(lar) (carousel) yuklash.
 // Yoki "video" (+ ixtiyoriy "thumbnail"), yoki "photos" (1-10 ta) kelishi kerak.
+// Videoga (Reels muharriri): "edit" — tahrirlar (JSON, utils/reelEdit.js) va
+// "music" — qo'shilgan musiqa yoki ovozli izoh (audio fayl, 20 MB gacha).
 // Sozlamalar (ixtiyoriy): visibility, commentsEnabled, hideLikeCount,
 // allowDownloads; shareToStory — post darhol story'ga ham qo'yiladi
 // (faqat hammaga ochiq post).
@@ -17,9 +22,19 @@ async function create(req, res) {
         const videoFile = req.files?.video?.[0];
         const thumbFile = req.files?.thumbnail?.[0];
         const photoFiles = req.files?.photos || [];
+        const musicFile = req.files?.music?.[0];
 
         let mediaItems;
+        let edit = null;
+        let musicUrl = null;
         if (videoFile) {
+            edit = sanitizeReelEdit(req.body.edit);
+            if (musicFile) {
+                if (musicFile.size > MAX_MUSIC_BYTES) {
+                    throw Object.assign(new Error('Musiqa fayli 20 MB dan oshmasin'), { status: 400 });
+                }
+                musicUrl = publicPath(musicFile.filename);
+            }
             mediaItems = [
                 {
                     mediaUrl: publicPath(videoFile.filename),
@@ -29,6 +44,10 @@ async function create(req, res) {
                 },
             ];
         } else if (photoFiles.length > 0) {
+            // Rasmlarga filtr ilovaning o'zida "pishiriladi" — bu yerda faqat video uchun
+            if (musicFile || req.body.edit) {
+                throw Object.assign(new Error('Musiqa va tahrirlar faqat video uchun'), { status: 400 });
+            }
             mediaItems = photoFiles.map((file) => ({
                 mediaUrl: publicPath(file.filename),
                 mediaType: 'photo',
@@ -39,6 +58,8 @@ async function create(req, res) {
 
         const post = await postsService.createPost(req.userId, {
             mediaItems,
+            edit,
+            musicUrl,
             caption: req.body.caption,
             settings: {
                 visibility: req.body.visibility,

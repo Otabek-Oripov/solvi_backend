@@ -133,6 +133,10 @@ CREATE TABLE IF NOT EXISTS posts (
     hide_like_count  BOOLEAN NOT NULL DEFAULT false,
     allow_downloads  BOOLEAN NOT NULL DEFAULT true,
     edited_at        TIMESTAMPTZ,
+    -- Reels muharriri tahrirlari (filtr, kesish, tezlik, ovoz, fon, matn/
+    -- stikerlar — ko'rsatishda qo'llanadi) va qo'shilgan musiqa fayli
+    edit             JSONB,
+    music_url        TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT chk_posts_visibility CHECK (visibility IN ('public', 'followers', 'private'))

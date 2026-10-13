@@ -66,14 +66,19 @@ function postFileFilter(req, file, cb) {
         if (!VIDEO_TYPES[file.mimetype]) {
             return cb(Object.assign(new Error('Faqat MP4, MOV yoki WEBM video yuklash mumkin'), { status: 400 }));
         }
+    } else if (file.fieldname === 'music') {
+        if (!AUDIO_TYPES[file.mimetype]) {
+            return cb(Object.assign(new Error('Musiqa MP3, M4A, AAC, WAV yoki OGG bo\'lishi kerak'), { status: 400 }));
+        }
     } else if (!IMAGE_TYPES[file.mimetype]) {
         return cb(Object.assign(new Error('Rasm JPEG, PNG yoki WEBP bo\'lishi kerak'), { status: 400 }));
     }
     cb(null, true);
 }
 
-// Post yaratish: yoki bitta video (+ ixtiyoriy muqova), yoki bir nechta rasm
-// ("photos" — Instagram uslubidagi carousel, ko'pi bilan 10 tasi).
+// Post yaratish: yoki bitta video (+ ixtiyoriy muqova va Reels muharririda
+// qo'shilgan musiqa/ovozli izoh — "music"), yoki bir nechta rasm ("photos" —
+// Instagram uslubidagi carousel, ko'pi bilan 10 tasi).
 const uploadPost = multer({
     storage,
     fileFilter: postFileFilter,
@@ -82,6 +87,7 @@ const uploadPost = multer({
     { name: 'video', maxCount: 1 },
     { name: 'thumbnail', maxCount: 1 },
     { name: 'photos', maxCount: 10 },
+    { name: 'music', maxCount: 1 },
 ]);
 
 function chatMediaFileFilter(req, file, cb) {

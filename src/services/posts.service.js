@@ -12,7 +12,8 @@ function httpError(message, status) {
 const POST_FIELDS = `
     id, user_id, media_url, media_type, caption, thumbnail_url, duration,
     views_count, likes_count, comments_count, created_at,
-    visibility, comments_enabled, hide_like_count, allow_downloads, edited_at
+    visibility, comments_enabled, hide_like_count, allow_downloads, edited_at,
+    edit, music_url
 `;
 
 // Post viewer'ga ko'rinsa — uning qatori (layk, izoh, saqlash va h.k. shu
@@ -37,7 +38,9 @@ async function loadVisiblePost(db, postId, viewerId, { forUpdate = false } = {})
 // settings: { visibility, commentsEnabled, hideLikeCount, allowDownloads } —
 // berilmaganlari standart (hammaga ochiq, izohlar yoqilgan, layklar ko'rinadi,
 // yuklab olish mumkin).
-async function createPost(userId, { mediaItems, caption, settings = {} }) {
+// edit — Reels muharriri tahrirlari (tekshirilgan, utils/reelEdit.js),
+// musicUrl — videoga qo'shilgan musiqa fayli.
+async function createPost(userId, { mediaItems, caption, settings = {}, edit = null, musicUrl = null }) {
     if (!Array.isArray(mediaItems) || mediaItems.length === 0) {
         throw httpError('Kamida bitta video yoki rasm kerak', 400);
     }
@@ -49,8 +52,9 @@ async function createPost(userId, { mediaItems, caption, settings = {} }) {
         const first = mediaItems[0];
         const { rows } = await client.query(
             `INSERT INTO posts (user_id, media_url, media_type, caption, thumbnail_url, duration,
-                                visibility, comments_enabled, hide_like_count, allow_downloads)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                                visibility, comments_enabled, hide_like_count, allow_downloads,
+                                edit, music_url)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
              RETURNING ${POST_FIELDS}`,
             [
                 userId,
@@ -63,6 +67,8 @@ async function createPost(userId, { mediaItems, caption, settings = {} }) {
                 settings.commentsEnabled ?? true,
                 settings.hideLikeCount ?? false,
                 settings.allowDownloads ?? true,
+                edit ? JSON.stringify(edit) : null,
+                musicUrl,
             ]
         );
         const post = rows[0];
@@ -102,6 +108,7 @@ function postSelectSql({ extraColumns = '', extraJoins = '' } = {}) {
                     ELSE p.likes_count END AS likes_count,
                p.comments_count, p.reposts_count,
                p.visibility, p.comments_enabled, p.hide_like_count, p.allow_downloads, p.edited_at,
+               p.edit, p.music_url,
                p.created_at, u.username, u.avatar_url,
                EXISTS(
                    SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = $1

@@ -121,7 +121,12 @@ async function isMediaReferenced(url, db = pool) {
     const { rows } = await db.query(
         `SELECT EXISTS (SELECT 1 FROM messages WHERE media_url = $1)
              OR EXISTS (SELECT 1 FROM stickers WHERE media_url = $1)
-             OR EXISTS (SELECT 1 FROM saved_gifs WHERE url = $1) AS used`,
+             OR EXISTS (SELECT 1 FROM saved_gifs WHERE url = $1)
+             OR EXISTS (
+                 SELECT 1 FROM posts
+                 WHERE edit IS NOT NULL
+                   AND edit->'overlays' @> jsonb_build_array(jsonb_build_object('url', $1::text))
+             ) AS used`,
         [url]
     );
     return rows[0].used;
