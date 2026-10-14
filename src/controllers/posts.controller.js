@@ -7,6 +7,7 @@ const { emitToParticipants } = require('../realtime/socket');
 const { handleError } = require('../utils/http');
 const { publicPath } = require('../middlewares/upload.middleware');
 const { sanitizeReelEdit } = require('../utils/reelEdit');
+const { assertMediaAllowed } = require('../services/moderation.service');
 
 const MAX_MUSIC_BYTES = 20 * 1024 * 1024;
 
@@ -55,6 +56,14 @@ async function create(req, res) {
         } else {
             throw Object.assign(new Error('Video yoki rasm(lar) topilmadi'), { status: 400 });
         }
+
+        // 18+ / terror / zo'ravonlik — Solvi qoidalariga zid bo'lsa joylanmaydi
+        // (fayllarni cleanupUploadsOnError o'chiradi).
+        await assertMediaAllowed([
+            ...(videoFile ? [{ path: videoFile.path, video: true }] : []),
+            ...(thumbFile ? [{ path: thumbFile.path }] : []),
+            ...photoFiles.map((file) => ({ path: file.path })),
+        ]);
 
         const post = await postsService.createPost(req.userId, {
             mediaItems,

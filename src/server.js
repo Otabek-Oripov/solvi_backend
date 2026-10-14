@@ -3,6 +3,7 @@ const http = require('http');
 const app = require('./app');
 const { initSocket } = require('./realtime/socket');
 const { resetPresence, startMaintenance } = require('./services/maintenance.service');
+const moderation = require('./services/moderation.service');
 
 const PORT = process.env.PORT || 3000;
 
@@ -20,5 +21,6 @@ resetPresence()
         httpServer.listen(PORT, () => {
             console.log(`Solvi backend ${PORT}-portda ishga tushdi`);
             startMaintenance();
+            moderation.warmUp();
         });
     });

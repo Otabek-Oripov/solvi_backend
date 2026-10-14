@@ -2,6 +2,7 @@ const storiesService = require('../services/stories.service');
 const { emitToParticipants } = require('../realtime/socket');
 const { handleError } = require('../utils/http');
 const { publicPath, removeUploadedFile } = require('../middlewares/upload.middleware');
+const { assertMediaAllowed } = require('../services/moderation.service');
 
 // POST /stories — multipart: "media" fayl (+ ixtiyoriy "thumbnail") YOKI
 // "postId" (postni story'ga qo'shish); "overlays" — matn/emoji'lar (JSON);
@@ -10,6 +11,11 @@ async function create(req, res) {
     try {
         const mediaFile = req.files?.media?.[0];
         const thumbFile = req.files?.thumbnail?.[0];
+        // 18+ / terror / zo'ravonlik — Solvi qoidalariga zid bo'lsa joylanmaydi.
+        await assertMediaAllowed([
+            ...(mediaFile ? [{ path: mediaFile.path, video: mediaFile.mimetype.startsWith('video/') }] : []),
+            ...(thumbFile ? [{ path: thumbFile.path }] : []),
+        ]);
         const upload = mediaFile
             ? {
                 mediaUrl: publicPath(mediaFile.filename),
