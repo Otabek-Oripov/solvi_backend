@@ -63,6 +63,7 @@ const STOPWORDS = new Set([
     'deb', 'dedi', 'degan', 'bor', 'yoq', 'hozir', 'doim', 'har', 'birga', 'qilish',
     'kimdir', 'nimadir', 'ozim', 'ozing', 'ozi', 'sizlar', 'bizlar', 'ular', 'mendan',
     'sendan', 'undan', 'bizdan', 'sizdan', 'boylab', 'qildik', 'qildim', 'qilamiz', 'boldik',
+    'boldim', 'kerakli', 'yaxshi', 'zorr', 'boylab', 'qildik', 'qildim', 'qilamiz', 'boldik',
     'boldim', 'kerakli', 'yaxshi', 'zorr',
     // русский
     'это', 'этот', 'эта', 'эти', 'того', 'тоже', 'только', 'когда', 'чтобы', 'очень',

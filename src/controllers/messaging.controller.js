@@ -3,6 +3,7 @@ const { emitToParticipants } = require('../realtime/socket');
 const { handleError } = require('../utils/http');
 const { publicPath, removeUploadedFile } = require('../middlewares/upload.middleware');
 const { normalizeMediaUrl } = require('../utils/externalMedia');
+const { assertMediaAllowed } = require('../services/moderation.service');
 
 // GET /conversations — foydalanuvchining barcha suhbatlari
 async function listConversations(req, res) {
@@ -58,6 +59,8 @@ async function sendMessage(req, res) {
             if (file.mimetype.startsWith('video/')) type = 'video';
             else if (file.mimetype.startsWith('audio/')) type = 'voice';
             else type = 'image';
+            // 18+ / terror / zo'ravonlik — chatda ham yuborilmaydi (ovozli xabar tekshirilmaydi).
+            if (type !== 'voice') await assertMediaAllowed([{ path: file.path, video: type === 'video' }]);
         } else if (req.body.type === 'sticker' && req.body.stickerId) {
             stickerId = req.body.stickerId;
         } else if (req.body.mediaUrl) {

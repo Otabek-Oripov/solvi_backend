@@ -2,6 +2,7 @@ const usersService = require('../services/users.service');
 const { handleError } = require('../utils/http');
 const { parseMatchFilters } = require('../utils/filters');
 const { publicPath, removeUploadedFile } = require('../middlewares/upload.middleware');
+const { assertMediaAllowed } = require('../services/moderation.service');
 
 // GET /users/me — o'z profili
 async function getMe(req, res) {
@@ -100,6 +101,8 @@ async function updateMe(req, res) {
 async function uploadPhoto(req, res) {
     try {
         if (!req.file) throw Object.assign(new Error('Fayl topilmadi'), { status: 400 });
+        // 18+ / terror / zo'ravonlik — profilga qo'yilmaydi.
+        await assertMediaAllowed([{ path: req.file.path }]);
 
         const photo = await usersService.addPhoto(req.userId, publicPath(req.file.filename));
         res.status(201).json({ photo });
