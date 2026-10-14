@@ -33,7 +33,7 @@ router.post(
     uploadPost,
     [
         body('caption').optional({ nullable: true }).isLength({ max: 500 }).withMessage('Caption 500 belgidan oshmasin'),
-        body('duration').optional({ nullable: true }).isInt({ min: 0, max: 600 }).withMessage('Video davomiyligi noto\'g\'ri'),
+        body('duration').optional({ nullable: true }).isInt({ min: 0 }).withMessage('Video davomiyligi noto\'g\'ri'),
         ...settingsChecks,
         body('shareToStory').optional({ values: 'falsy' }).isBoolean().withMessage('shareToStory noto\'g\'ri'),
     ],

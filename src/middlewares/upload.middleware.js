@@ -82,7 +82,8 @@ function postFileFilter(req, file, cb) {
 const uploadPost = multer({
     storage,
     fileFilter: postFileFilter,
-    limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB — video uchun
+    // Reels davomiyligi cheklanmaydi — uzun videolar uchun katta chegara.
+    limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2 GB
 }).fields([
     { name: 'video', maxCount: 1 },
     { name: 'thumbnail', maxCount: 1 },

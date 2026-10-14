@@ -9,7 +9,8 @@ const { httpError } = require('./http');
 const MAX_EDIT_JSON_LENGTH = 24 * 1024;
 const MAX_OVERLAYS = 20;
 const MAX_TEXT_LENGTH = 200;
-const MAX_VIDEO_MS = 10 * 60 * 1000;
+// Reels uzunligi cheklanmaydi — bu faqat kesish nuqtalari uchun aql chegarasi.
+const MAX_VIDEO_MS = 24 * 60 * 60 * 1000;
 const MIN_CLIP_MS = 500;
 const SPEEDS = [0.3, 0.5, 1, 1.5, 2, 3];
 const TEXT_STYLES = ['plain', 'filled', 'soft'];
