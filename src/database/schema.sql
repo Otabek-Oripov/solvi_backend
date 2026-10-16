@@ -126,7 +126,8 @@ CREATE TABLE IF NOT EXISTS posts (
     reposts_count   INTEGER NOT NULL DEFAULT 0,
     -- post_tags qaysi qoidalar versiyasi bilan ajratilgani (0 — hali ajratilmagan)
     tags_version    SMALLINT NOT NULL DEFAULT 0,
-    -- Sozlamalar: kim ko'ra oladi (hamma / kuzatuvchilar / faqat muallif),
+    -- Sozlamalar: kim ko'ra oladi (hamma / kuzatuvchilar / faqat muallif /
+    -- tanlanganlar — post_audience),
     -- izohlar, layklar sonini yashirish, yuklab olishga ruxsat
     visibility       VARCHAR(10) NOT NULL DEFAULT 'public',
     comments_enabled BOOLEAN NOT NULL DEFAULT true,
@@ -139,8 +140,18 @@ CREATE TABLE IF NOT EXISTS posts (
     music_url        TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT chk_posts_visibility CHECK (visibility IN ('public', 'followers', 'private'))
+    CONSTRAINT chk_posts_visibility CHECK (visibility IN ('public', 'followers', 'private', 'custom'))
 );
+
+-- visibility = 'custom': postni ko'ra oladigan, muallif tanlagan odamlar
+-- (uning kuzatuvchilari va kuzatganlari orasidan).
+CREATE TABLE IF NOT EXISTS post_audience (
+    post_id UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (post_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_post_audience_user ON post_audience(user_id);
 
 -- Postni (o'zinikini ham) o'z profiliga "repost" qilish (hammaga ochiq).
 -- thought — repost qilgan odam avatari ustidagi qisqa fikr ("Add a thought").

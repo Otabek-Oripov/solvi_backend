@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const postsService = require('../services/posts.service');
 const { recordViews } = require('../services/recommendation.service');
 const storiesService = require('../services/stories.service');
-const { parseBool } = require('../utils/postVisibility');
+const { parseBool, parseAudience } = require('../utils/postVisibility');
 const { emitToParticipants } = require('../realtime/socket');
 const { handleError } = require('../utils/http');
 const { publicPath } = require('../middlewares/upload.middleware');
@@ -15,7 +15,8 @@ const MAX_MUSIC_BYTES = 20 * 1024 * 1024;
 // Yoki "video" (+ ixtiyoriy "thumbnail"), yoki "photos" (1-10 ta) kelishi kerak.
 // Videoga (Reels muharriri): "edit" — tahrirlar (JSON, utils/reelEdit.js) va
 // "music" — qo'shilgan musiqa yoki ovozli izoh (audio fayl, 20 MB gacha).
-// Sozlamalar (ixtiyoriy): visibility, commentsEnabled, hideLikeCount,
+// Sozlamalar (ixtiyoriy): visibility (+ "custom" bo'lsa audience — tanlangan
+// odamlar id'lari, JSON satr), commentsEnabled, hideLikeCount,
 // allowDownloads; shareToStory — post darhol story'ga ham qo'yiladi
 // (faqat hammaga ochiq post).
 async function create(req, res) {
@@ -72,6 +73,7 @@ async function create(req, res) {
             caption: req.body.caption,
             settings: {
                 visibility: req.body.visibility,
+                audience: parseAudience(req.body.audience),
                 commentsEnabled: parseBool(req.body.commentsEnabled),
                 hideLikeCount: parseBool(req.body.hideLikeCount),
                 allowDownloads: parseBool(req.body.allowDownloads),
@@ -151,6 +153,7 @@ async function update(req, res) {
         const post = await postsService.updatePost(req.userId, req.params.id, {
             caption: req.body.caption,
             visibility: req.body.visibility || undefined,
+            audience: parseAudience(req.body.audience),
             commentsEnabled: parseBool(req.body.commentsEnabled),
             hideLikeCount: parseBool(req.body.hideLikeCount),
             allowDownloads: parseBool(req.body.allowDownloads),

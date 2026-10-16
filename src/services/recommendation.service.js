@@ -409,8 +409,11 @@ LEFT JOIN author_interest ai ON ai.author_id = p.user_id
 LEFT JOIN co_liked co ON co.post_id = p.id
 LEFT JOIN post_views pv ON pv.post_id = p.id AND pv.user_id = $1
 WHERE p.id NOT IN (SELECT post_id FROM served)
-  -- Kim ko'ra oladi: hamma / kuzatuvchilar (f — viewer muallifni kuzatadi) / faqat muallif
-  AND (p.visibility = 'public' OR p.user_id = $1 OR (p.visibility = 'followers' AND f.following_id IS NOT NULL))
+  -- Kim ko'ra oladi: hamma / kuzatuvchilar (f — viewer muallifni kuzatadi) / faqat muallif /
+  -- muallif tanlaganlar (post_audience)
+  AND (p.visibility = 'public' OR p.user_id = $1 OR (p.visibility = 'followers' AND f.following_id IS NOT NULL)
+       OR (p.visibility = 'custom' AND EXISTS(
+           SELECT 1 FROM post_audience pa WHERE pa.post_id = p.id AND pa.user_id = $1)))
 ORDER BY score DESC
 LIMIT $3
 `;

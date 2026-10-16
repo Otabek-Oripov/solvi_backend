@@ -90,6 +90,18 @@ router.get(
 
 router.get('/me/photos', requireAuth, controller.listPhotos);
 
+// Kuzatuvchilar + kuzatilganlar (post "Tanlash" auditoriyasi). `/:id` dan OLDIN.
+router.get(
+    '/me/connections',
+    requireAuth,
+    [
+        query('q').optional({ values: 'falsy' }).isString().isLength({ max: 60 }).withMessage('q juda uzun'),
+        query('limit').optional().isInt({ min: 1, max: 1000 }).withMessage('limit noto\'g\'ri'),
+    ],
+    validate,
+    controller.listConnections
+);
+
 router.post(
     '/me/photos',
     requireAuth,

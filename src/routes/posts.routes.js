@@ -3,13 +3,18 @@ const { body, param, query, validationResult } = require('express-validator');
 const controller = require('../controllers/posts.controller');
 const { requireAuth } = require('../middlewares/auth.middleware');
 const { uploadPost, cleanupUploadsOnError } = require('../middlewares/upload.middleware');
-const { VISIBILITIES } = require('../utils/postVisibility');
+const { VISIBILITIES, parseAudience } = require('../utils/postVisibility');
 
 const router = express.Router();
 
 // Post sozlamalari (yaratishda — multipart satrlar, tahrirlashda — JSON)
 const settingsChecks = [
     body('visibility').optional({ values: 'falsy' }).isIn(VISIBILITIES).withMessage('visibility noto\'g\'ri'),
+    // "Tanlash" — user id'lar (JSON massiv yoki satr)
+    body('audience')
+        .optional({ values: 'null' })
+        .custom((value) => parseAudience(value) !== null)
+        .withMessage('audience noto\'g\'ri'),
     body('commentsEnabled').optional({ values: 'null' }).isBoolean().withMessage('commentsEnabled noto\'g\'ri'),
     body('hideLikeCount').optional({ values: 'null' }).isBoolean().withMessage('hideLikeCount noto\'g\'ri'),
     body('allowDownloads').optional({ values: 'null' }).isBoolean().withMessage('allowDownloads noto\'g\'ri'),

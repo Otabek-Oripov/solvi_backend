@@ -3,6 +3,33 @@ const { getOrCreateDirectConversation, sendMessage } = require('./messaging.serv
 const { tagPost, recordSignal, rankForYouIds, normalizeKey } = require('./recommendation.service');
 const { visibleToViewerSql } = require('../utils/postVisibility');
 
+// "Tanlash" (custom): berilgan id'lardan faqat muallifning kuzatuvchilari va
+// kuzatganlari (faol hisoblar) qoladi. Hech kim qolmasa — 400.
+async function resolveAudience(db, userId, ids) {
+    const { rows } = await db.query(
+        `SELECT u.id FROM users u
+         WHERE u.id = ANY($2::uuid[]) AND u.id <> $1 AND u.is_active = true
+           AND (EXISTS(SELECT 1 FROM follows f WHERE f.follower_id = $1 AND f.following_id = u.id)
+                OR EXISTS(SELECT 1 FROM follows f WHERE f.follower_id = u.id AND f.following_id = $1))`,
+        [userId, ids || []]
+    );
+    if (rows.length === 0) {
+        throw httpError('Kamida bitta odam tanlang (kuzatuvchilaringiz yoki kuzatganlaringizdan)', 400);
+    }
+    return rows.map((r) => r.id);
+}
+
+async function replaceAudience(db, postId, ids) {
+    await db.query('DELETE FROM post_audience WHERE post_id = $1', [postId]);
+    if (ids.length) {
+        await db.query(
+            `INSERT INTO post_audience (post_id, user_id)
+             SELECT $1, unnest($2::uuid[]) ON CONFLICT DO NOTHING`,
+            [postId, ids]
+        );
+    }
+}
+
 function httpError(message, status) {
     const err = new Error(message);
     err.status = status;
@@ -35,15 +62,18 @@ async function loadVisiblePost(db, postId, viewerId, { forUpdate = false } = {})
 // posts.media_url/media_type/thumbnail_url/duration ustunlariga BIRINCHI element
 // nusxa sifatida yoziladi (tezkor ko'rsatish uchun), barcha elementlar esa
 // post_media jadvaliga (carousel uchun) yoziladi.
-// settings: { visibility, commentsEnabled, hideLikeCount, allowDownloads } —
+// settings: { visibility, audience, commentsEnabled, hideLikeCount, allowDownloads } —
 // berilmaganlari standart (hammaga ochiq, izohlar yoqilgan, layklar ko'rinadi,
-// yuklab olish mumkin).
+// yuklab olish mumkin). visibility = 'custom' bo'lsa audience (user id'lar) shart.
 // edit — Reels muharriri tahrirlari (tekshirilgan, utils/reelEdit.js),
 // musicUrl — videoga qo'shilgan musiqa fayli.
 async function createPost(userId, { mediaItems, caption, settings = {}, edit = null, musicUrl = null }) {
     if (!Array.isArray(mediaItems) || mediaItems.length === 0) {
         throw httpError('Kamida bitta video yoki rasm kerak', 400);
     }
+
+    const custom = settings.visibility === 'custom';
+    const audience = custom ? await resolveAudience(pool, userId, settings.audience) : null;
 
     const client = await pool.connect();
     try {
@@ -81,11 +111,16 @@ async function createPost(userId, { mediaItems, caption, settings = {}, edit = n
                 [post.id, item.mediaUrl, item.mediaType, item.thumbnailUrl || null, item.duration || null, i]
             );
         }
+        if (audience) await replaceAudience(client, post.id, audience);
         // "Siz uchun" lentasi uchun post mavzulari (#hashtag / kalit so'zlar)
         await tagPost(client, post.id, caption);
 
         await client.query('COMMIT');
-        return { ...post, media: mediaItems.map((m, i) => ({ url: m.mediaUrl, mediaType: m.mediaType, position: i })) };
+        return {
+            ...post,
+            audience_ids: audience,
+            media: mediaItems.map((m, i) => ({ url: m.mediaUrl, mediaType: m.mediaType, position: i })),
+        };
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
         throw err;
@@ -99,7 +134,8 @@ async function createPost(userId, { mediaItems, caption, settings = {}, edit = n
 // bosganmi, repost qilganmi (va qanday fikr qoldirgan), saqlaganmi,
 // muallifni kuzatadimi. `extraColumns` / `extraJoins` — repost/saqlanganlar
 // ro'yxatlari uchun (masalan qachon repost qilingani). Layklar soni
-// yashirilgan bo'lsa — faqat muallifga ko'rinadi (boshqalarga 0).
+// yashirilgan bo'lsa — faqat muallifga ko'rinadi (boshqalarga 0). "Tanlash"
+// ro'yxati (audience_ids) ham faqat muallifga qaytadi (tahrirlash uchun).
 function postSelectSql({ extraColumns = '', extraJoins = '' } = {}) {
     return `
         SELECT p.id, p.user_id, p.media_url, p.media_type, p.caption, p.thumbnail_url,
@@ -109,6 +145,10 @@ function postSelectSql({ extraColumns = '', extraJoins = '' } = {}) {
                p.comments_count, p.reposts_count,
                p.visibility, p.comments_enabled, p.hide_like_count, p.allow_downloads, p.edited_at,
                p.edit, p.music_url,
+               CASE WHEN p.visibility = 'custom' AND p.user_id = $1 THEN (
+                   SELECT COALESCE(json_agg(pa.user_id), '[]'::json)
+                   FROM post_audience pa WHERE pa.post_id = p.id
+               ) END AS audience_ids,
                p.created_at, u.username, u.avatar_url,
                EXISTS(
                    SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = $1
@@ -660,8 +700,10 @@ async function setCommentLike(userId, postId, commentId, liked) {
 }
 
 // ---------- Postni tahrirlash (faqat muallif): caption va sozlamalar ----------
-// changes: { caption?, visibility?, commentsEnabled?, hideLikeCount?, allowDownloads? }
+// changes: { caption?, visibility?, audience?, commentsEnabled?, hideLikeCount?, allowDownloads? }
 // — berilganlari o'zgaradi. Caption o'zgarsa, post mavzulari qayta ajratiladi.
+// "Tanlash" (custom): audience berilsa ro'yxat almashtiriladi (custom'ga endi
+// o'tilayotgan bo'lsa — shart); boshqa turga o'tilsa — ro'yxat tozalanadi.
 async function updatePost(userId, postId, changes) {
     const columns = {
         caption: 'caption',
@@ -679,20 +721,37 @@ async function updatePost(userId, postId, changes) {
         params.push(value);
         sets.push(`${column} = $${params.length}`);
     }
-    if (!sets.length) throw httpError('O\'zgartirish uchun hech narsa berilmadi', 400);
+    if (!sets.length && changes.audience === undefined) {
+        throw httpError('O\'zgartirish uchun hech narsa berilmadi', 400);
+    }
 
-    const owner = await pool.query('SELECT user_id FROM posts WHERE id = $1', [postId]);
+    const owner = await pool.query('SELECT user_id, visibility FROM posts WHERE id = $1', [postId]);
     if (!owner.rows[0]) throw httpError('Post topilmadi', 404);
     if (owner.rows[0].user_id !== userId) throw httpError('Faqat o\'z postingizni o\'zgartira olasiz', 403);
+
+    const nextVisibility = changes.visibility ?? owner.rows[0].visibility;
+    let audience = null;
+    if (nextVisibility === 'custom') {
+        if (changes.audience !== undefined) {
+            audience = await resolveAudience(pool, userId, changes.audience);
+        } else if (owner.rows[0].visibility !== 'custom') {
+            throw httpError('Kamida bitta odam tanlang (kuzatuvchilaringiz yoki kuzatganlaringizdan)', 400);
+        }
+    }
 
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
         const { rows } = await client.query(
-            `UPDATE posts SET ${sets.join(', ')}, edited_at = NOW() WHERE id = $1 RETURNING caption`,
+            `UPDATE posts SET ${[...sets, 'edited_at = NOW()'].join(', ')} WHERE id = $1 RETURNING caption`,
             params
         );
         if (changes.caption !== undefined) await tagPost(client, postId, rows[0].caption);
+        if (audience) {
+            await replaceAudience(client, postId, audience);
+        } else if (nextVisibility !== 'custom') {
+            await client.query('DELETE FROM post_audience WHERE post_id = $1', [postId]);
+        }
         await client.query('COMMIT');
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});

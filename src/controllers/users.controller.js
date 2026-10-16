@@ -73,6 +73,20 @@ async function listFollowing(req, res) {
     }
 }
 
+// GET /users/me/connections?q= — mening kuzatuvchilarim va kuzatganlarim
+// (post "Tanlash" auditoriyasi uchun)
+async function listConnections(req, res) {
+    try {
+        const users = await usersService.listConnections(req.userId, {
+            q: req.query.q,
+            limit: req.query.limit,
+        });
+        res.json({ users });
+    } catch (err) {
+        handleError(res, err);
+    }
+}
+
 // GET /users/:id/followers — :id'ni kuzatayotganlar
 async function listFollowers(req, res) {
     try {
@@ -178,4 +192,5 @@ module.exports = {
     listUsers,
     listFollowing,
     listFollowers,
+    listConnections,
 };

@@ -355,6 +355,38 @@ async function listFollowers(userId, { limit, cursor, viewerId }) {
     return rows;
 }
 
+// ---------- Mening kuzatuvchilarim va kuzatganlarim (bitta ro'yxat) ----------
+// Post "Kim ko'ra oladi" > "Tanlash" uchun: is_following — men uni kuzataman,
+// is_follower — u meni kuzatadi. q — username/ism bo'yicha qidiruv.
+async function listConnections(userId, { q, limit } = {}) {
+    const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 300, 1), 1000);
+    const params = [userId, safeLimit];
+    let search = '';
+    const text = String(q || '').trim();
+    if (text) {
+        params.push(`%${text.replace(/[\\%_]/g, (c) => '\\' + c)}%`);
+        search = `AND (u.username ILIKE $${params.length} OR u.full_name ILIKE $${params.length})`;
+    }
+    const { rows } = await pool.query(
+        `SELECT ${LIST_USER_FIELDS}, c.is_following, c.is_follower
+         FROM (
+             SELECT u.id,
+                    EXISTS(SELECT 1 FROM follows f WHERE f.follower_id = $1 AND f.following_id = u.id) AS is_following,
+                    EXISTS(SELECT 1 FROM follows f WHERE f.follower_id = u.id AND f.following_id = $1) AS is_follower
+             FROM users u
+             WHERE u.id IN (SELECT following_id FROM follows WHERE follower_id = $1
+                            UNION
+                            SELECT follower_id FROM follows WHERE following_id = $1)
+         ) c
+         JOIN users u ON u.id = c.id
+         WHERE u.is_active = true AND u.id <> $1 ${search}
+         ORDER BY (c.is_following AND c.is_follower) DESC, lower(u.username)
+         LIMIT $2`,
+        params
+    );
+    return rows;
+}
+
 // Faqat mavjud/faol foydalanuvchimi tekshirish uchun yengil so'rov —
 // masalan qo'ng'iroqqa kim taklif qilinayotganini tasdiqlashda ishlatiladi.
 async function userExists(userId) {
@@ -435,5 +467,6 @@ module.exports = {
     listUsers,
     listFollowing,
     listFollowers,
+    listConnections,
     MAX_PHOTOS,
 };
